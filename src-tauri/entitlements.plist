@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements for signed/hardened-runtime builds. Unsigned local dev builds
+      do not consult this file, but a notarized release does.
+    -->
+
+    <!-- Microphone capture. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!--
+      The app is NOT sandboxed. ScreenCaptureKit system-audio capture does not
+      work from inside the App Sandbox without a distribution entitlement Apple
+      grants case by case, and this is a local tool distributed outside the Mac
+      App Store. Stated explicitly so the choice is visible rather than implied
+      by omission.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Reaching model providers, including localhost. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

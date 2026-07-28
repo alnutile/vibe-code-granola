@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Merged into the bundle's Info.plist by tauri-bundler, and embedded into the
+      dev binary too, so permission prompts read correctly in `npm run tauri dev`.
+
+      Note there is no usage-description key for Screen Recording. macOS gates
+      that purely through TCC: the first capture attempt fails and the app appears
+      in System Settings → Privacy & Security → Screen & System Audio Recording
+      for the user to enable. That is also how system audio is gated, which is why
+      this app needs screen-recording permission despite never reading a pixel.
+    -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>vibecode-granola records your microphone during meetings so your side of the conversation appears in the transcript. Audio is transcribed and then discarded unless you turn on "keep audio files" in Settings.</string>
+
+    <!-- Menu-bar-friendly: the app keeps recording when the window is closed. -->
+    <key>LSUIElement</key>
+    <false/>
+</dict>
+</plist>

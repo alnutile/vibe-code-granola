@@ -1,0 +1,61 @@
+# --- Dependencies & build output ---
+node_modules
+dist
+dist-ssr
+*.local
+src-tauri/target
+src-tauri/gen/schemas
+
+# --- Logs ---
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Secrets & local config (NEVER commit) ---
+# API keys live in the macOS Keychain, not on disk. These rules are belt-and-braces
+# so an accidental local override can never be pushed.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.mobileprovision
+secrets.json
+config.local.json
+
+# --- Local application data (recordings, transcripts, database) ---
+# The app writes these to ~/Library/Application Support in normal use, but keep
+# them ignored in case anyone points the data dir at the repo while debugging.
+/data
+/recordings
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.wav
+*.m4a
+*.mp3
+
+# --- macOS signing / notarization ---
+src-tauri/*.entitlements.local
+AuthKey_*.p8
+
+# --- Editor & OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
