@@ -47,8 +47,9 @@ Built with [Tauri 2](https://tauri.app) — Rust backend, React frontend.
 
 - **macOS 15 or later** — ScreenCaptureKit gained separate microphone capture in 15.0.
 - Apple Silicon recommended (whisper.cpp is dramatically faster with Metal).
-- To build from source: [Rust](https://rustup.rs), [Node](https://nodejs.org) 20+, Xcode Command
-  Line Tools.
+- To build from source: [Rust](https://rustup.rs), [Node](https://nodejs.org) 20+, and **Xcode 26
+  or newer**. ScreenCaptureKit pulls in a Swift bridge that references macOS 26 SDK symbols, so
+  an older Xcode fails to compile it even though the app itself runs on macOS 15.
 
 ## Install
 

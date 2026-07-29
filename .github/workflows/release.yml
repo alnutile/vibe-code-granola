@@ -16,12 +16,23 @@ permissions:
 
 jobs:
   build:
-    # Apple Silicon runner: the app requires macOS 15+ and is aarch64-only in
-    # practice, since ScreenCaptureKit microphone capture needs 15.0.
-    runs-on: macos-15
+    # Needs the macOS 26 SDK, not just macOS 15+ at runtime.
+    #
+    # ScreenCaptureKit pulls in `apple-metal`, whose Swift bridge references
+    # MTLSamplerReductionMode and MTLSamplerDescriptor.lodBias behind an
+    # `if #available(macOS 26.0, *)`. That check is a *runtime* guard — the
+    # symbols still have to exist in the SDK at compile time — so an older
+    # Xcode fails with "cannot find 'MTLSamplerReductionMode' in scope".
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo "SDK: $(xcrun --show-sdk-version)"
 
       - uses: actions/setup-node@v4
         with:
@@ -38,9 +49,11 @@ jobs:
         run: npm ci
 
       - name: Check
+        # Tests run in release so their dependency artifacts are reused by the
+        # build below, rather than compiling the whole tree twice.
         run: |
           npx tsc --noEmit
-          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --release --manifest-path src-tauri/Cargo.toml
 
       - name: Build
         run: npm run tauri build
