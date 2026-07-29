@@ -62,8 +62,8 @@ xattr -dr com.apple.quarantine /Applications/Amble.app
 ### From source
 
 ```bash
-git clone https://github.com/alnutile/amble
-cd amble
+git clone https://github.com/alnutile/vibe-code-granola
+cd vibe-code-granola
 npm install
 npm run tauri dev
 ```
