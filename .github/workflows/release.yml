@@ -3,9 +3,9 @@ name: Release
 # Cut a release by pushing a tag:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# Produces an unsigned .dmg. Without an Apple Developer certificate macOS will
-# quarantine it, so the release notes tell people how to open it — see the
-# `body` below.
+# Signs and notarizes when the APPLE_* secrets are present (see
+# scripts/upload-signing-secrets.sh); otherwise it still builds, just unsigned,
+# so forks and contributors get a working artifact rather than a failed job.
 on:
   push:
     tags: ["v*"]
@@ -13,6 +13,11 @@ on:
 
 permissions:
   contents: write
+
+env:
+  # Referenced by `if:` on the signing steps. GitHub doesn't allow `secrets.*`
+  # in a step-level `if`, so it has to come through the env context.
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
 
 jobs:
   build:
@@ -55,8 +60,48 @@ jobs:
           npx tsc --noEmit
           cargo test --release --manifest-path src-tauri/Cargo.toml
 
+      # Signing is optional: forks and contributors without the secrets still get
+      # a working (unsigned) build rather than a red X.
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASSWORD="$(openssl rand -base64 24)"
+
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign blocks on a GUI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$PASSWORD" "$KEYCHAIN" >/dev/null
+
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build
+        env:
+          # Tauri signs when APPLE_SIGNING_IDENTITY is set, and notarizes when
+          # the Apple ID trio is present too. Empty values mean an unsigned build.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri build
+
+      - name: Verify signature
+        if: env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: ./scripts/verify-signing.sh
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -70,12 +115,10 @@ jobs:
 
             Download the `.dmg`, open it, and drag **Amble** to Applications.
 
-            This build is **unsigned**, so macOS will refuse the first launch.
-            Right-click Amble → **Open** → **Open**, or run:
+            Signed and notarized by Apple — it opens normally, no warnings.
 
-            ```bash
-            xattr -dr com.apple.quarantine /Applications/Amble.app
-            ```
+            <sub>If you see a Gatekeeper warning, this build came out unsigned:
+            right-click Amble → **Open** → **Open**.</sub>
 
             ## First run
 

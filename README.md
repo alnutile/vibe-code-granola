@@ -301,6 +301,23 @@ See [CLAUDE.md](CLAUDE.md) for the architecture in more depth.
 > Don't launch `target/debug/…` directly — a debug build loads the frontend from Vite on
 > `localhost:1420`, so without the dev server you get a window that opens and renders nothing.
 
+### Code signing
+
+Unsigned builds are fine for hacking on it, but they cost you twice: Gatekeeper blocks the app
+for anyone who downloads it, and macOS forgets Screen Recording permission on **every rebuild**,
+because TCC keys the grant to the code hash. Signing with an Apple Developer ID fixes both — TCC
+then keys on the certificate, which doesn't change between builds.
+
+```bash
+./scripts/setup-signing.sh          # one-time: cert + notarization credentials
+source .env.signing && npm run tauri build
+./scripts/verify-signing.sh         # signed? hardened? notarized? stapled?
+./scripts/upload-signing-secrets.sh # one-time: same material into GitHub Actions
+```
+
+The release workflow signs and notarizes when those secrets exist, and falls back to an unsigned
+build when they don't — so forks still get a working artifact.
+
 ## Not done yet
 
 - **Outbound MCP.** Connections are configured and stored, but nothing dials out — so a
