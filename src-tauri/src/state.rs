@@ -47,13 +47,32 @@ impl AppState {
         }
         let db = Db::open(&paths.db)?;
 
+        let secrets = SecretStore::new();
+
+        // Adopt API keys saved under the app's previous identity — on its own
+        // thread, never on the startup path.
+        //
+        // Reading a Keychain item created by a differently-signed binary makes
+        // macOS put up a *blocking* permission dialog. Doing that inline hangs
+        // the app behind a prompt the user has no context for, with no window on
+        // screen to explain it. Backgrounded, the window opens immediately and
+        // the prompt is answerable at leisure; declining costs nothing but
+        // re-pasting a key.
+        {
+            let secrets = secrets.clone();
+            std::thread::spawn(move || match secrets.migrate_from_legacy() {
+                0 => tracing::debug!("no keys to adopt from the previous app identity"),
+                n => tracing::info!(keys = n, "adopted keys from the previous app identity"),
+            });
+        }
+
         tracing::info!(root = ?paths.root, "app data directory ready");
 
         Ok(Self {
             db,
             paths,
             settings: RwLock::new(settings),
-            secrets: SecretStore::new(),
+            secrets,
             active: Mutex::new(None),
             mcp_server: tokio::sync::Mutex::new(None),
             mcp_listening: AtomicBool::new(false),

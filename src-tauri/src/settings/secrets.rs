@@ -7,7 +7,11 @@
 
 use crate::error::{AppError, Result};
 
-const SERVICE: &str = "com.vibecode.granola";
+use super::{BUNDLE_ID, LEGACY_BUNDLE_ID};
+
+/// Keychain entries are scoped to the bundle identity, so renaming the app would
+/// otherwise strand every saved key.
+const SERVICE: &str = BUNDLE_ID;
 
 pub const OPENROUTER_API_KEY: &str = "openrouter_api_key";
 pub const OPENAI_API_KEY: &str = "openai_api_key";
@@ -32,6 +36,39 @@ impl SecretStore {
 
     fn entry(&self, key: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(SERVICE, key).map_err(|e| AppError::Keychain(e.to_string()))
+    }
+
+    /// Copy any keys left under the app's previous identity.
+    ///
+    /// Copy rather than move: the old entries are harmless where they are, and
+    /// deleting them would make downgrading lossy. Called once at startup, and a
+    /// no-op after the first run since `set` writes to the new service.
+    ///
+    /// Errors are logged, never propagated — a locked Keychain must not stop the
+    /// app launching, and the user can always re-paste a key.
+    pub fn migrate_from_legacy(&self) -> usize {
+        let mut moved = 0;
+
+        for key in SECRET_KEYS {
+            if self.has(key) {
+                continue;
+            }
+            let Ok(old) = keyring::Entry::new(LEGACY_BUNDLE_ID, key) else {
+                continue;
+            };
+            match old.get_password() {
+                Ok(value) => match self.set(key, &value) {
+                    Ok(()) => {
+                        moved += 1;
+                        tracing::info!(key, "migrated key from the previous app identity");
+                    }
+                    Err(e) => tracing::warn!(key, error = %e, "could not migrate key"),
+                },
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => tracing::debug!(key, error = %e, "no legacy key to migrate"),
+            }
+        }
+        moved
     }
 
     /// Store a key. An empty or whitespace-only value deletes the entry instead,

@@ -24,6 +24,10 @@ can't tell the difference.
 
 Built with [Tauri 2](https://tauri.app) — Rust backend, React frontend.
 
+<div align="center">
+  <img src="assets/screenshot.png" width="900" alt="Amble showing a rendered meeting write-up, the transcript tab, attached skills, and the chat panel">
+</div>
+
 ### What you get
 
 - **Both sides of the conversation.** One ScreenCaptureKit stream captures system audio and your
@@ -229,7 +233,7 @@ unlisted.
 ## Your data
 
 ```
-~/Library/Application Support/com.vibecode.granola/
+~/Library/Application Support/com.alnutile.amble/
 ├── config.json     preferences (no secrets)
 ├── granola.db      meetings, transcripts, notes, chat — SQLite
 └── recordings/     per-chunk WAVs, only if you enable "keep audio files"
@@ -237,6 +241,12 @@ unlisted.
 
 - **API keys live in the macOS Keychain.** The UI can ask *whether* a key is set; it can't read
   one back.
+
+> **Upgrading from a build before the rename?** The app was previously
+> `com.vibecode.granola`. Your meetings move across automatically on first launch. Saved API
+> keys are copied too, but macOS will ask permission to read them — allow it, or just re-paste
+> the keys in Settings. You'll also need to re-grant Screen Recording, since macOS keys that to
+> the bundle identifier.
 - **Audio is deleted after transcription** unless you opt in to keeping it.
 - Nothing syncs anywhere. The only outbound traffic goes to the model provider you choose — and
   that can be `localhost`.
@@ -284,7 +294,7 @@ npx tsc --noEmit                                   # typecheck the frontend
 npm run tauri build                                # .app + .dmg
 ```
 
-`RUST_LOG=vibecode_granola_lib=debug npm run tauri dev` for the recording loop's internals.
+`RUST_LOG=amble_lib=debug npm run tauri dev` for the recording loop's internals.
 See [CLAUDE.md](CLAUDE.md) for the architecture in more depth.
 
 > Don't launch `target/debug/…` directly — a debug build loads the frontend from Vite on

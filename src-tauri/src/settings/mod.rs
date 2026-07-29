@@ -255,6 +255,15 @@ pub fn new_server_token() -> String {
     format!("amb_lcl_{}", &raw[..20])
 }
 
+/// Reverse-DNS identity. Must match `identifier` in `tauri.conf.json` — macOS
+/// keys permissions and the Keychain on it, so a mismatch silently splits the
+/// app's state in two.
+pub const BUNDLE_ID: &str = "com.alnutile.amble";
+
+/// What the app was called before it was named Amble. Only used to find and
+/// adopt data left behind by that version.
+pub const LEGACY_BUNDLE_ID: &str = "com.vibecode.granola";
+
 /// Resolved on startup and handed around as part of app state.
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -265,9 +274,26 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `~/Library/Application Support/com.vibecode.granola` on macOS.
+    /// `~/Library/Application Support/com.alnutile.amble` on macOS.
     pub fn resolve() -> Result<Self> {
-        let root = dirs_data_dir()?.join("com.vibecode.granola");
+        let data = dirs_data_dir()?;
+        let root = data.join(BUNDLE_ID);
+
+        // The app shipped for a while as `com.vibecode.granola`. Anyone who used
+        // it then has their whole history under the old directory, so adopt it
+        // rather than silently starting empty. A rename is atomic within the
+        // volume and leaves nothing behind to drift out of sync.
+        let legacy = data.join(LEGACY_BUNDLE_ID);
+        if !root.exists() && legacy.exists() {
+            match std::fs::rename(&legacy, &root) {
+                Ok(()) => tracing::info!(?legacy, ?root, "migrated data directory"),
+                Err(e) => {
+                    // Not fatal — better an empty app than a refusal to launch.
+                    tracing::error!(error = %e, "could not migrate the old data directory");
+                }
+            }
+        }
+
         std::fs::create_dir_all(&root)?;
         let recordings = root.join("recordings");
         std::fs::create_dir_all(&recordings)?;

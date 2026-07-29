@@ -22,7 +22,7 @@ cargo test --manifest-path src-tauri/Cargo.toml      # all Rust tests
 cargo test --manifest-path src-tauri/Cargo.toml resample   # filter by substring
 npx tsc --noEmit                                     # typecheck the frontend
 
-RUST_LOG=vibecode_granola_lib=debug npm run tauri dev      # recording-loop internals
+RUST_LOG=amble_lib=debug npm run tauri dev      # recording-loop internals
 ```
 
 Tests are in-module `#[cfg(test)]` blocks. `Db::open_in_memory()` is a test-only constructor —
@@ -124,7 +124,7 @@ at runtime.
 
 ## Things that will bite you
 
-- **Never launch `target/debug/vibecode-granola` directly.** A debug build resolves
+- **Never launch `target/debug/amble` directly.** A debug build resolves
   the frontend to `devUrl` (`http://localhost:1420`), not to `dist/` — so without Vite
   running you get a window that opens, stays alive, and renders nothing. The process
   looks perfectly healthy from the outside; the only symptom is
@@ -137,6 +137,15 @@ at runtime.
   `Library not loaded: @rpath/libswift_Concurrency.dylib`. It is in `build.rs` and **not**
   `.cargo/config.toml` on purpose — cargo reads that file relative to the *current working
   directory*, so building from the repo root would silently produce an unlaunchable binary.
+- **Never read the Keychain on the startup path.** Reading an item created by a
+  differently-signed binary makes macOS put up a *blocking* permission dialog, so the app
+  hangs with no window on screen and no log output — it looks like a freeze, not a prompt.
+  `SecretStore::migrate_from_legacy` therefore runs on its own thread. `SecurityAgent` in
+  `pgrep` is the tell.
+- **The app renamed from `com.vibecode.granola` to `com.alnutile.amble`.**
+  `settings::LEGACY_BUNDLE_ID` exists only so the old data directory gets adopted (an atomic
+  rename) and old Keychain items get copied. Changing `BUNDLE_ID` again means writing another
+  migration — macOS keys the data directory, the Keychain, *and* TCC permissions on it.
 - **`error::Result<T>` shadows `std::result::Result`.** Inside `error.rs` itself (and any impl
   returning a foreign trait's Result) you must write `std::result::Result` explicitly.
 - **Screen Recording permission gates system audio**, not just video — macOS classifies it that

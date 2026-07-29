@@ -1,4 +1,4 @@
-//! vibecode-granola — a local-first meeting recorder and AI notepad.
+//! Amble — a local-first meeting recorder and AI notepad.
 //!
 //! Records system audio and your microphone, transcribes as you go, suggests
 //! things to say against the intent you set for the meeting, and lets you chat
@@ -24,11 +24,11 @@ use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // `RUST_LOG=vibecode_granola_lib=debug` for the recording loop's internals.
+    // `RUST_LOG=amble_lib=debug` for the recording loop's internals.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vibecode_granola_lib=info,warn".into()),
+                .unwrap_or_else(|_| "amble_lib=info,warn".into()),
         )
         .init();
 
@@ -37,7 +37,7 @@ pub fn run() {
         Err(e) => {
             // Without state there is no app — a blank window with silently broken
             // buttons would be worse than an honest failure.
-            eprintln!("vibecode-granola could not start: {e}");
+            eprintln!("Amble could not start: {e}");
             std::process::exit(1);
         }
     };

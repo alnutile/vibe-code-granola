@@ -114,8 +114,8 @@ impl LlmClient {
             // OpenRouter attributes usage to these; harmless everywhere else, but
             // only sent where it means something.
             req = req
-                .header("HTTP-Referer", "https://github.com/alnutile/vibecode-granola")
-                .header("X-Title", "vibecode-granola");
+                .header("HTTP-Referer", "https://github.com/alnutile/vibe-code-granola")
+                .header("X-Title", "Amble");
         }
         req
     }
