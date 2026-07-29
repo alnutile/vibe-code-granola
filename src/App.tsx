@@ -1,46 +1,57 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "./lib/api";
 import { subscribe } from "./lib/events";
-import type { Folder, Meeting, RecordingState } from "./lib/types";
-import Sidebar from "./components/Sidebar";
+import type { Folder, MeetingListItem, ModelStatus, RecordingState } from "./lib/types";
+import Rail, { type View } from "./components/Rail";
+import MeetingList from "./components/MeetingList";
 import MeetingView from "./components/MeetingView";
 import SettingsView from "./components/SettingsView";
+import SkillsView from "./components/SkillsView";
+import { PlusIcon } from "./components/Icons";
 import "./App.css";
 
-type Route = { kind: "meeting"; id: string } | { kind: "settings" } | { kind: "empty" };
-
 export default function App() {
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
-  const [route, setRoute] = useState<Route>({ kind: "empty" });
-  const [recording, setRecording] = useState<RecordingState>({ recording: false, meetingId: null });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>("notes");
+  const [chatOpen, setChatOpen] = useState(true);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [recording, setRecording] = useState<RecordingState>({
+    recording: false,
+    meetingId: null,
+  });
   const [error, setError] = useState<string | null>(null);
 
-  const refreshMeetings = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const [m, f] = await Promise.all([api.listMeetings(folderFilter), api.listFolders()]);
+      const [m, f] = await Promise.all([api.listMeetings(), api.listFolders()]);
       setMeetings(m);
       setFolders(f);
     } catch (e) {
       setError(api.errorMessage(e));
     }
-  }, [folderFilter]);
-
-  useEffect(() => {
-    void refreshMeetings();
-  }, [refreshMeetings]);
-
-  // Recording may already be in progress if the window was closed and reopened,
-  // so ask rather than assume it isn't.
-  useEffect(() => {
-    void api
-      .getRecordingState()
-      .then(setRecording)
-      .catch(() => {});
   }, []);
 
-  // The sidebar reflects status and title changes for every meeting, not just the
+  const refreshModelStatus = useCallback(() => {
+    void api.getModelStatus().then(setModelStatus).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    refreshModelStatus();
+    // Recording may already be running if the window was closed and reopened.
+    void api
+      .getRecordingState()
+      .then((s) => {
+        setRecording(s);
+        if (s.meetingId) setSelectedId((cur) => cur ?? s.meetingId);
+      })
+      .catch(() => {});
+  }, [refresh, refreshModelStatus]);
+
+  // Status and title changes matter for every meeting in the list, not just the
   // open one, so this subscription lives at the top of the tree.
   useEffect(
     () =>
@@ -52,20 +63,47 @@ export default function App() {
           });
           setMeetings((prev) =>
             prev.map((m) =>
-              m.id === e.meetingId ? { ...m, status: e.status as Meeting["status"] } : m,
+              m.id === e.meetingId ? { ...m, status: e.status as MeetingListItem["status"] } : m,
             ),
           );
+          // A finished meeting has a fresh snippet and duration to pick up.
+          if (e.status === "done") void refresh();
         },
-        onUpdated: () => void refreshMeetings(),
+        onUpdated: () => void refresh(),
+        onNotes: () => void refresh(),
       }),
-    [refreshMeetings],
+    [refresh],
   );
+
+  // Skills and Settings take the full stage, so the chat aside stands down.
+  const chatVisible = chatOpen && view === "notes";
 
   const newMeeting = async () => {
     try {
       const m = await api.createMeeting({ folderId: folderFilter });
-      await refreshMeetings();
-      setRoute({ kind: "meeting", id: m.id });
+      setSelectedId(m.id);
+      setView("notes");
+      await refresh();
+
+      // The design starts capturing straight away — this is a recorder, and the
+      // button is one click from a live conversation. If permission isn't
+      // granted the meeting still exists, unrecorded, with the reason shown.
+      try {
+        await api.startRecording(m.id);
+      } catch (e) {
+        setError(api.errorMessage(e));
+      }
+    } catch (e) {
+      setError(api.errorMessage(e));
+    }
+  };
+
+  const newFolder = async () => {
+    const name = window.prompt("Folder name");
+    if (!name?.trim()) return;
+    try {
+      await api.createFolder(name.trim());
+      await refresh();
     } catch (e) {
       setError(api.errorMessage(e));
     }
@@ -74,70 +112,93 @@ export default function App() {
   const removeMeeting = async (id: string) => {
     try {
       await api.deleteMeeting(id);
-      if (route.kind === "meeting" && route.id === id) setRoute({ kind: "empty" });
-      await refreshMeetings();
+      if (selectedId === id) setSelectedId(null);
+      await refresh();
     } catch (e) {
       setError(api.errorMessage(e));
     }
   };
 
+  const visible =
+    folderFilter === null ? meetings : meetings.filter((m) => m.folderId === folderFilter);
+
   return (
     <div className="app">
-      <Sidebar
-        meetings={meetings}
+      <Rail
         folders={folders}
-        folderFilter={folderFilter}
-        activeId={route.kind === "meeting" ? route.id : null}
-        recordingId={recording.meetingId}
-        settingsOpen={route.kind === "settings"}
-        onSelectFolder={setFolderFilter}
-        onSelect={(id) => setRoute({ kind: "meeting", id })}
-        onNew={newMeeting}
-        onDelete={removeMeeting}
-        onOpenSettings={() => setRoute({ kind: "settings" })}
-        onFoldersChanged={refreshMeetings}
+        meetings={meetings}
+        activeFolder={folderFilter}
+        modelStatus={modelStatus}
+        view={view}
+        onPickFolder={(id) => {
+          setFolderFilter(id);
+          setView("notes");
+        }}
+        onNewFolder={newFolder}
+        onNewMeeting={newMeeting}
+        onPickView={setView}
       />
 
-      <main className="main">
-        {error && (
-          <div className="banner banner-error">
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
-          </div>
-        )}
+      {view === "notes" && (
+        <MeetingList
+          meetings={visible}
+          activeId={selectedId}
+          recordingId={recording.meetingId}
+          onSelect={(id) => {
+            setSelectedId(id);
+            setView("notes");
+          }}
+          onDelete={removeMeeting}
+        />
+      )}
 
-        {route.kind === "settings" && <SettingsView onClose={() => setRoute({ kind: "empty" })} />}
+      {error && (
+        <div
+          className="banner banner-error"
+          style={{ position: "fixed", bottom: 16, right: 16, zIndex: 10, maxWidth: 460, margin: 0 }}
+        >
+          <span>{error}</span>
+          <button className="btn btn-ghost" onClick={() => setError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
-        {route.kind === "meeting" && (
-          <MeetingView
-            key={route.id}
-            meetingId={route.id}
-            isRecording={recording.meetingId === route.id}
-            anotherRecording={recording.recording && recording.meetingId !== route.id}
-            onChanged={refreshMeetings}
-          />
-        )}
-
-        {route.kind === "empty" && (
-          <div className="empty-state">
-            <h1>vibecode-granola</h1>
+      {view === "settings" ? (
+        <SettingsView onSaved={refreshModelStatus} onError={setError} />
+      ) : view === "skills" ? (
+        <SkillsView onError={setError} />
+      ) : selectedId ? (
+        <MeetingView
+          key={selectedId}
+          meetingId={selectedId}
+          folders={folders}
+          isRecording={recording.meetingId === selectedId}
+          anotherRecording={recording.recording && recording.meetingId !== selectedId}
+          chatOpen={chatVisible}
+          onToggleChat={() => setChatOpen((c) => !c)}
+          onChanged={refresh}
+        />
+      ) : (
+        <section className="stage">
+          <div className="blank">
+            <h2>Nothing selected</h2>
             <p>
-              Start a meeting and it records your microphone and everything playing through your
+              Start a meeting and Amble records your microphone and everything playing through your
               speakers, transcribes as it goes, and writes it up when you stop.
             </p>
             <button className="btn btn-primary" onClick={newMeeting}>
+              <PlusIcon />
               New meeting
             </button>
-            <p className="hint">
-              First run?{" "}
-              <button className="link" onClick={() => setRoute({ kind: "settings" })}>
-                Open Settings
-              </button>{" "}
-              to choose your models and grant recording permission.
-            </p>
+            {modelStatus?.needsSetup && (
+              <button className="btn btn-ghost" onClick={() => setView("settings")}>
+                Finish setting up your models first
+              </button>
+            )}
           </div>
-        )}
-      </main>
+        </section>
+      )}
     </div>
   );
 }

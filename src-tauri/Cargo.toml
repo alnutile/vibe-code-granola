@@ -29,6 +29,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 futures-util = "0.3"
 
 reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
+# The local MCP server. `axum` shares hyper/tower with reqwest, so this adds
+# little beyond the routing layer itself.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 
 rusqlite = { version = "0.40", features = ["bundled"] }
 keyring = "4"

@@ -46,9 +46,14 @@ impl Default for LlmSettings {
 pub struct SttSettings {
     /// `openai` | `openai_compatible` | `whisper_cpp`
     ///
-    /// `openai_compatible` covers speaches, faster-whisper-server, LM Studio and
-    /// friends — anything serving `/audio/transcriptions`. `whisper_cpp` is the
+    /// `openai_compatible` covers speaches, faster-whisper-server and friends —
+    /// anything actually serving `/audio/transcriptions`. `whisper_cpp` is the
     /// odd one out: whisper.cpp's own server uses `/inference` instead.
+    ///
+    /// **LM Studio does not belong here.** It serves chat and embeddings only;
+    /// it has no `/audio/transcriptions` route and its chat API rejects audio
+    /// content parts, so no speech model loaded in it can transcribe. It is a
+    /// fine choice for `LlmSettings::provider`, just not this one.
     pub provider: String,
     pub base_url: String,
     pub model: String,
@@ -113,32 +118,42 @@ impl Default for CaptureSettings {
     }
 }
 
-/// MCP wiring. Both halves are scaffolded and off by default — see `src/mcp`.
+/// MCP wiring, in both directions.
+///
+/// *Outbound* (`connections`) are servers this app would call into, so a
+/// post-skill can file an issue or append to a page. *Inbound* is this app's own
+/// server, which Claude Desktop / Claude Code connect to. Neither transport is
+/// implemented yet — this is the configuration for both, and it persists.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpSettings {
-    /// Expose this app's meetings to Claude Desktop and other MCP hosts.
+    /// Expose this app's meetings to Claude and other MCP hosts.
     pub server_enabled: bool,
+    /// Loopback only — never bound to a routable address.
     pub server_port: u16,
-    /// MCP servers this app connects out to, so meeting chat can call tools.
-    pub clients: Vec<McpClientConfig>,
+    /// Bearer token a client must present. Generated on first run.
+    #[serde(default)]
+    pub server_token: String,
+    /// Tool names withheld from MCP hosts. Absent means every tool is offered,
+    /// so a tool added in a later version is exposed unless explicitly turned
+    /// off — the opposite would silently hide new tools from existing configs.
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+    /// MCP servers this app connects out to.
+    #[serde(default)]
+    pub connections: Vec<McpConnection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct McpClientConfig {
+pub struct McpConnection {
+    pub id: String,
     pub name: String,
     pub enabled: bool,
-    /// `stdio` | `http`
+    /// `stdio` | `SSE` | `HTTP`
     pub transport: String,
-    /// stdio transport: the executable and its arguments.
-    #[serde(default)]
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// http transport: the server endpoint.
-    #[serde(default)]
-    pub url: String,
+    /// A URL for SSE/HTTP, or the command line for stdio.
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,8 +177,10 @@ impl Default for Settings {
             capture: CaptureSettings::default(),
             mcp: McpSettings {
                 server_enabled: false,
-                server_port: 8787,
-                clients: Vec::new(),
+                server_port: 4577,
+                server_token: String::new(),
+                disabled_tools: Vec::new(),
+                connections: Vec::new(),
             },
         }
     }
@@ -185,6 +202,17 @@ impl Settings {
                 Self::default()
             }
         }
+    }
+
+    /// Mint an access token if there isn't one. Called after load so the Claude
+    /// settings tab always has a real token to show, without the UI having to
+    /// ask for one first.
+    pub fn ensure_server_token(&mut self) -> bool {
+        if !self.mcp.server_token.is_empty() {
+            return false;
+        }
+        self.mcp.server_token = new_server_token();
+        true
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -216,6 +244,15 @@ impl Settings {
             _ => None,
         }
     }
+}
+
+/// A bearer token for the local MCP endpoint.
+///
+/// From `Uuid::new_v4`, which is already a CSPRNG draw — this only reshapes it
+/// into something recognisable in a config file.
+pub fn new_server_token() -> String {
+    let raw = uuid::Uuid::new_v4().simple().to_string();
+    format!("amb_lcl_{}", &raw[..20])
 }
 
 /// Resolved on startup and handed around as part of app state.

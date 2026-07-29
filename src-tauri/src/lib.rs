@@ -13,6 +13,7 @@ pub mod error;
 pub mod llm;
 pub mod mcp;
 pub mod meeting;
+pub mod notes;
 pub mod prompts;
 pub mod settings;
 pub mod state;
@@ -43,11 +44,27 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(state)
+        .manage(Arc::clone(&state))
+        .setup(move |_app| {
+            // Bring the MCP endpoint back up if the user left it on, so Claude
+            // reconnects on its own after a restart.
+            if state.settings_snapshot().mcp.server_enabled {
+                let state = Arc::clone(&state);
+                tauri::async_runtime::spawn(async move {
+                    let port = state.settings_snapshot().mcp.server_port;
+                    if let Err(e) = state.start_mcp(port).await {
+                        // Not fatal: the app is still a meeting recorder without it.
+                        tracing::error!(error = %e, "could not start the MCP server");
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // settings
             commands::settings_get,
             commands::settings_save,
+            commands::model_status,
             commands::secret_set,
             commands::secret_clear,
             commands::provider_defaults,
@@ -80,18 +97,37 @@ pub fn run() {
             commands::transcript_text,
             commands::search,
             // notes & suggestions
-            commands::notes_list,
+            commands::notes_get,
             commands::note_save,
             commands::notes_generate,
+            commands::note_toggle_action,
             commands::suggestions_list,
             commands::suggest_now,
             // chat
             commands::chat_history,
             commands::chat_send,
             commands::chat_clear,
+            // skills
+            commands::skills_list,
+            commands::skill_create,
+            commands::skill_update,
+            commands::skill_delete,
+            commands::meeting_skills,
+            commands::meeting_attach_skill,
+            commands::meeting_detach_skill,
+            commands::skill_runs,
+            commands::skills_run_now,
             // mcp
             commands::mcp_status,
             commands::mcp_tool_call,
+            commands::mcp_claude_access,
+            commands::mcp_server_set_enabled,
+            commands::mcp_server_restart,
+            commands::mcp_regenerate_token,
+            commands::mcp_set_tool_enabled,
+            commands::mcp_add_connection,
+            commands::mcp_remove_connection,
+            commands::mcp_toggle_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

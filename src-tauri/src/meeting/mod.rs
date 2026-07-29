@@ -17,6 +17,7 @@ use crate::audio::{wav, AudioBuffers, Recorder, Source, CAPTURE_SAMPLE_RATE};
 use crate::db::Segment;
 use crate::error::{AppError, Result};
 use crate::llm::ChatMsg;
+use crate::notes::RenderedNotes;
 use crate::prompts;
 use crate::state::{ActiveMeeting, AppState};
 use events::*;
@@ -61,7 +62,14 @@ pub fn start(app: AppHandle, state: Arc<AppState>, meeting_id: &str) -> Result<(
 
     emit_status(&app, &meeting.id, "recording", None);
 
-    tokio::spawn(transcription_loop(
+    // `tauri::async_runtime::spawn`, not `tokio::spawn`.
+    //
+    // This is reached from a synchronous `#[tauri::command]`, which Tauri runs on
+    // a plain worker thread with no Tokio runtime in thread-local context —
+    // `tokio::spawn` there panics ("must be called from the context of a Tokio
+    // runtime"), and a panic across the FFI boundary aborts the whole process.
+    // Tauri's handle carries the runtime with it and works from any thread.
+    tauri::async_runtime::spawn(transcription_loop(
         app.clone(),
         Arc::clone(&state),
         meeting.id.clone(),
@@ -70,12 +78,7 @@ pub fn start(app: AppHandle, state: Arc<AppState>, meeting_id: &str) -> Result<(
     ));
 
     if settings.capture.suggestions_enabled {
-        tokio::spawn(suggestion_loop(
-            app,
-            state,
-            meeting.id.clone(),
-            stop,
-        ));
+        tauri::async_runtime::spawn(suggestion_loop(app, state, meeting.id.clone(), stop));
     }
 
     Ok(())
@@ -259,13 +262,113 @@ async fn finalize(app: &AppHandle, state: &Arc<AppState>, meeting_id: &str) {
         }
     }
 
+    if has_transcript {
+        run_post_skills(app, state, meeting_id).await;
+    }
+
     let _ = state.db.mark_meeting_ended(meeting_id, "done");
     emit_status(app, meeting_id, "done", None);
     tracing::info!(meeting_id, "meeting finalized");
 }
 
+/// Run every attached post-skill against the finished meeting.
+///
+/// Sequential rather than concurrent: they share one model endpoint, and a local
+/// one will be the bottleneck anyway. Each run is recorded before it starts so
+/// the UI can show it working, and a failure is written to that row rather than
+/// aborting the rest.
+pub async fn run_post_skills(app: &AppHandle, state: &Arc<AppState>, meeting_id: &str) {
+    let skills: Vec<_> = match state.db.meeting_skills(meeting_id) {
+        Ok(s) => s
+            .into_iter()
+            .filter(|s| s.kind == "post" && s.enabled)
+            .collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read skills for post-run");
+            return;
+        }
+    };
+
+    if skills.is_empty() {
+        return;
+    }
+
+    let _ = state.db.clear_runs(meeting_id);
+    emit_status(app, meeting_id, "processing", Some("Running your skills…"));
+
+    for skill in skills {
+        let run = match state.db.create_run(meeting_id, &skill) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not record skill run");
+                continue;
+            }
+        };
+        emit_runs(app, state, meeting_id);
+
+        match execute_post_skill(state, meeting_id, &skill).await {
+            Ok(output) => {
+                // The output exists; delivering it to `target` needs an MCP
+                // client, which does not exist yet. Say so rather than implying
+                // something was filed.
+                let message = if skill.target.trim().is_empty() {
+                    "Ready".to_string()
+                } else {
+                    format!("Drafted — not yet sent to {}", skill.target)
+                };
+                let _ = state.db.finish_run(&run.id, "done", &message, &output);
+            }
+            Err(e) => {
+                tracing::warn!(skill = %skill.name, error = %e, "skill failed");
+                let _ = state
+                    .db
+                    .finish_run(&run.id, "error", &e.to_string(), "");
+            }
+        }
+        emit_runs(app, state, meeting_id);
+    }
+}
+
+async fn execute_post_skill(
+    state: &Arc<AppState>,
+    meeting_id: &str,
+    skill: &crate::db::Skill,
+) -> Result<String> {
+    let meeting = state.require_meeting(meeting_id)?;
+    let transcript = state.db.transcript_text(meeting_id)?;
+
+    let mut context = format!("Meeting: {}\n\nTranscript:\n{transcript}\n", meeting.title);
+    if let Some(notes) = load_notes(state, meeting_id)? {
+        context.push_str(&format!("\nRendered notes:\n{}\n", notes.to_plain_text()));
+    }
+    if let Some(user) = state.db.get_note(meeting_id, "user")? {
+        if !user.content.trim().is_empty() {
+            context.push_str(&format!("\nThe user's own notes:\n{}\n", user.content));
+        }
+    }
+
+    let system = prompts::with_meeting_context(prompts::SKILL_POST_SYSTEM, &meeting.prompt);
+    state
+        .llm()?
+        .complete(&[
+            ChatMsg::system(system),
+            ChatMsg::user(format!("Instruction:\n{}\n\n---\n\n{context}", skill.prompt)),
+        ])
+        .await
+}
+
+fn emit_runs(app: &AppHandle, state: &Arc<AppState>, meeting_id: &str) {
+    if let Ok(runs) = state.db.list_runs(meeting_id) {
+        emit_skill_runs(app, meeting_id, &runs);
+    }
+}
+
 /// Generate the write-up using the meeting's chosen template.
-pub async fn generate_notes(app: &AppHandle, state: &Arc<AppState>, meeting_id: &str) -> Result<String> {
+pub async fn generate_notes(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    meeting_id: &str,
+) -> Result<RenderedNotes> {
     let meeting = state.require_meeting(meeting_id)?;
     let transcript = state.db.transcript_text(meeting_id)?;
 
@@ -298,12 +401,55 @@ pub async fn generate_notes(app: &AppHandle, state: &Arc<AppState>, meeting_id: 
     }
 
     let system = prompts::with_meeting_context(prompts::NOTES_SYSTEM, &meeting.prompt);
-    let notes = state
+    let reply = state
         .llm()?
         .complete(&[ChatMsg::system(system), ChatMsg::user(user_content)])
         .await?;
 
-    state.db.upsert_note(meeting_id, "ai", &notes)?;
+    // Store the parsed form, not the raw reply: it normalizes away code fences and
+    // stray preamble, so everything downstream reads one consistent shape.
+    let notes = crate::notes::parse(&reply);
+    save_notes(state, meeting_id, &notes)?;
+    emit_notes(app, meeting_id, &notes);
+    Ok(notes)
+}
+
+/// Read the generated notes for a meeting, if any have been produced.
+pub fn load_notes(state: &AppState, meeting_id: &str) -> Result<Option<RenderedNotes>> {
+    Ok(state
+        .db
+        .get_note(meeting_id, "ai")?
+        .map(|n| crate::notes::parse(&n.content)))
+}
+
+fn save_notes(state: &AppState, meeting_id: &str, notes: &RenderedNotes) -> Result<()> {
+    state
+        .db
+        .upsert_note(meeting_id, "ai", &serde_json::to_string(notes)?)?;
+    Ok(())
+}
+
+/// Tick or untick one action item, addressed by its position in the list.
+///
+/// The whole note is rewritten because the actions live inside it — cheap at
+/// this size, and it keeps action state from drifting out of sync with the
+/// write-up it belongs to.
+pub fn toggle_action(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    meeting_id: &str,
+    index: usize,
+) -> Result<RenderedNotes> {
+    let mut notes = load_notes(state, meeting_id)?
+        .ok_or_else(|| AppError::NotFound(format!("notes for meeting {meeting_id}")))?;
+
+    let action = notes
+        .actions
+        .get_mut(index)
+        .ok_or_else(|| AppError::NotFound(format!("action {index}")))?;
+    action.done = !action.done;
+
+    save_notes(state, meeting_id, &notes)?;
     emit_notes(app, meeting_id, &notes);
     Ok(notes)
 }
@@ -405,7 +551,20 @@ pub async fn suggest_once(
         return Ok(None);
     }
 
-    let system = prompts::with_meeting_context(prompts::SUGGESTION_SYSTEM, &meeting.prompt);
+    // Live skills steer what the model listens for while the meeting is running.
+    let live: Vec<(String, String)> = state
+        .db
+        .meeting_skills(meeting_id)?
+        .into_iter()
+        .filter(|s| s.kind == "live" && s.enabled)
+        .map(|s| (s.name, s.prompt))
+        .collect();
+
+    let system = prompts::with_live_skills(
+        prompts::with_meeting_context(prompts::SUGGESTION_SYSTEM, &meeting.prompt),
+        &live,
+    );
+
     let reply = state
         .llm()?
         .complete(&[
@@ -435,7 +594,6 @@ pub async fn chat(
 ) -> Result<String> {
     let meeting = state.require_meeting(meeting_id)?;
     let transcript = state.db.transcript_text(meeting_id)?;
-    let notes = state.db.list_notes(meeting_id)?;
 
     let mut context = format!("Meeting: {}\n\n", meeting.title);
     if transcript.trim().is_empty() {
@@ -443,9 +601,14 @@ pub async fn chat(
     } else {
         context.push_str(&format!("Transcript:\n{transcript}\n"));
     }
-    for note in &notes {
-        let label = if note.kind == "ai" { "Generated notes" } else { "The user's own notes" };
-        context.push_str(&format!("\n{label}:\n{}\n", note.content));
+    if let Some(user_note) = state.db.get_note(meeting_id, "user")? {
+        if !user_note.content.trim().is_empty() {
+            context.push_str(&format!("\nThe user's own notes:\n{}\n", user_note.content));
+        }
+    }
+    // Flattened to prose — the chat model has no reason to see the storage schema.
+    if let Some(generated) = load_notes(state, meeting_id)? {
+        context.push_str(&format!("\nGenerated notes:\n{}\n", generated.to_plain_text()));
     }
 
     let system = prompts::with_meeting_context(prompts::CHAT_SYSTEM, &meeting.prompt);

@@ -1,0 +1,75 @@
+name: Release
+
+# Cut a release by pushing a tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Produces an unsigned .dmg. Without an Apple Developer certificate macOS will
+# quarantine it, so the release notes tell people how to open it — see the
+# `body` below.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Apple Silicon runner: the app requires macOS 15+ and is aarch64-only in
+    # practice, since ScreenCaptureKit microphone capture needs 15.0.
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check
+        run: |
+          npx tsc --noEmit
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build
+        run: npm run tauri build
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+          body: |
+            ## Install
+
+            Download the `.dmg`, open it, and drag **Amble** to Applications.
+
+            This build is **unsigned**, so macOS will refuse the first launch.
+            Right-click Amble → **Open** → **Open**, or run:
+
+            ```bash
+            xattr -dr com.apple.quarantine /Applications/Amble.app
+            ```
+
+            ## First run
+
+            Requires **macOS 15 or later**.
+
+            1. Grant Screen Recording (Settings → Recording), then **quit and reopen** Amble
+            2. Set up transcription — whisper.cpp is recommended and runs entirely on your Mac
+            3. Point the chat model at Ollama, LM Studio, OpenRouter, or OpenAI
+
+            Full setup instructions are in the [README](https://github.com/${{ github.repository }}#readme).

@@ -1,126 +1,232 @@
-# vibecode-granola
+<div align="center">
 
-A local-first meeting recorder and AI notepad for macOS. Press record, and it captures
-**everything you hear** — the call, a browser tab, a video — **and your microphone**,
-transcribes as you go, offers ideas while you're still talking, writes the meeting up
-when you stop, and lets you chat with the result afterwards.
+<img src="assets/app-icon.png" width="120" alt="Amble">
 
-Built with [Tauri 2](https://tauri.app) (Rust + React). It is an open-source take on
-Granola, with one deliberate difference: **every model is swappable**, including local
-ones. Transcription can run against OpenAI or a Whisper server on `localhost`. Chat can
-run against OpenRouter, OpenAI, Ollama, or LM Studio. Nothing about the app changes when
-you switch — that's the point.
+# Amble
 
-> **Status:** working foundation. Recording, transcription, live suggestions, note
-> generation, and chat all run end to end. The MCP tool surface is implemented and
-> callable; connecting it to a transport is the next step. See
-> [What's not done yet](#whats-not-done-yet).
+**A local-first meeting recorder and AI notepad for macOS.**
+
+Records the call *and* your microphone, transcribes as you go, writes the meeting up when you
+stop, and lets you chat with the result — with every model swappable, including local ones.
+
+</div>
 
 ---
 
-## How it works
+Press record. Amble captures **everything you hear** — the call, a browser tab, a video — **and
+your voice**, transcribes it live, and turns it into structured notes when you stop: a summary,
+numbered key points, and tickable action items with owners.
 
-```
- ScreenCaptureKit ──┬── system audio ──┐
-                    └── microphone ────┤
-                                       ▼
-                            chunk at natural pauses
-                                       │
-                                       ▼
-                        speech-to-text  (OpenAI | local Whisper)
-                                       │
-                                       ▼
-                            SQLite  (transcript, notes, chat)
-                                       │
-                    ┌──────────────────┼──────────────────┐
-                    ▼                  ▼                  ▼
-             live suggestions      write-up            chat
-                    └──────────────────┴──────────────────┘
-                                       │
-                            chat model  (OpenRouter | OpenAI | Ollama | LM Studio)
-```
+It's an open-source take on Granola, with one deliberate difference: **nothing is locked to a
+vendor.** Transcription can run entirely on your Mac with whisper.cpp. Chat can run on Ollama,
+LM Studio, OpenRouter, or OpenAI. Switching is two fields in Settings, and the rest of the app
+can't tell the difference.
 
-A few decisions worth knowing about:
+Built with [Tauri 2](https://tauri.app) — Rust backend, React frontend.
 
-**System audio comes from ScreenCaptureKit, not a virtual audio device.** No BlackHole, no
-aggregate device, no setup. macOS classifies "record what your speakers are playing" as a
-*screen-recording* capability, which is why the app asks for Screen Recording permission
-despite never reading a pixel. It requests the smallest, slowest video stream macOS will
-give it (2×2 at 1 fps) and discards every frame.
+### What you get
 
-**Mic and system audio stay separate all the way to the transcript.** ScreenCaptureKit tags
-each buffer with its origin, so lines get attributed to *You* vs *Them* without running a
-speaker-diarization model. You can turn this off to halve transcription calls.
-
-**Audio is cut at natural pauses, not on a fixed timer.** Fixed chunking slices words in
-half and Whisper cannot recover the missing halves. Instead, once a chunk passes a minimum
-length the app waits for a quiet frame and cuts there — falling back to a hard cut at the
-maximum so the live transcript never falls far behind. Silent chunks are dropped entirely,
-which also avoids paying for the stock hallucinations Whisper emits on silence
-("Thanks for watching!").
-
-**Your own notes outrank the transcript.** Anything you type during the meeting is passed
-to the write-up as higher-signal than the machine transcript.
+- **Both sides of the conversation.** One ScreenCaptureKit stream captures system audio and your
+  mic *separately*, so transcript lines are attributed to **You** vs **Them** without a
+  diarization model. No BlackHole, no virtual audio device, no setup.
+- **Structured write-ups.** Summary, key points, action items with owners — not a wall of prose.
+- **Skills.** Reusable prompts that steer the model *during* the meeting, or run *after* it to
+  draft the follow-up email, turn action items into tickets, and so on.
+- **Chat with any meeting**, grounded in its transcript and your own notes.
+- **A local MCP server**, so Claude Desktop and Claude Code can search and read your meetings.
+- **Genuinely private.** Everything is a SQLite file on your Mac. Point it at local models and
+  no audio or text ever leaves the machine.
 
 ---
 
 ## Requirements
 
-- **macOS 15 or later.** ScreenCaptureKit gained separate microphone capture in 15.0;
-  system audio alone works from 13.0 if you lower `minimumSystemVersion` and disable mic
-  capture.
-- [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 20+.
-- Xcode Command Line Tools.
+- **macOS 15 or later** — ScreenCaptureKit gained separate microphone capture in 15.0.
+- Apple Silicon recommended (whisper.cpp is dramatically faster with Metal).
+- To build from source: [Rust](https://rustup.rs), [Node](https://nodejs.org) 20+, Xcode Command
+  Line Tools.
 
-## Getting started
+## Install
+
+### From a release
+
+Download the `.dmg` from [Releases](../../releases) and drag Amble to `/Applications`.
+
+Builds are **unsigned** (no Apple Developer certificate), so macOS will refuse the first launch.
+Right-click the app → **Open** → **Open**, or:
 
 ```bash
-git clone https://github.com/<you>/vibecode-granola
-cd vibecode-granola
+xattr -dr com.apple.quarantine /Applications/Amble.app
+```
+
+### From source
+
+```bash
+git clone https://github.com/alnutile/amble
+cd amble
 npm install
 npm run tauri dev
 ```
 
-On first launch:
+---
 
-1. **Grant Screen Recording permission.** Open Settings inside the app and use the button
-   there, or go to *System Settings → Privacy & Security → Screen & System Audio Recording*,
-   enable the app, and **restart it** — macOS only applies the change on relaunch.
-2. **Configure a chat model** in Settings → *Chat, notes & suggestions*, and paste an API
-   key if you picked a hosted provider. Hit **Test connection**.
-3. **Configure transcription** in Settings → *Transcription*. Same deal.
-4. Press **New meeting**, write a line about what you want out of it, and hit **Record**.
-   macOS will ask for microphone access the first time.
+## Set up transcription — start here
 
-The meeting prompt is what makes the live suggestions useful — "I want to leave with a
-decision on the vendor" produces far better nudges than an empty box.
-
-## Model configuration
-
-| What | Providers | Endpoint used |
-|---|---|---|
-| Chat, notes, suggestions | OpenRouter, OpenAI, Ollama, LM Studio, custom | `POST {baseUrl}/chat/completions` |
-| Transcription | OpenAI, any OpenAI-compatible server, whisper.cpp | `POST {baseUrl}/audio/transcriptions`, or `/inference` for whisper.cpp |
-
-Everything is base-URL plus model string, so anything that speaks these two APIs works
-without code changes.
-
-**Fully local setup**, if you want zero network calls:
+**whisper.cpp is the recommended engine.** It runs entirely on your Mac, uses Metal on Apple
+Silicon, costs nothing per minute, and in practice transcribes meetings excellently.
 
 ```bash
-# Chat
-ollama serve && ollama pull llama3.1
-# → Settings: provider "Ollama", base http://localhost:11434/v1, model llama3.1
+brew install whisper-cpp
 
-# Transcription (speaches, or any faster-whisper server)
-docker run -p 8000:8000 ghcr.io/speaches-ai/speaches:latest
-# → Settings: provider "Local, OpenAI-compatible", base http://127.0.0.1:8000/v1
+# ~550MB. The best speed/accuracy balance for meetings on Apple Silicon.
+curl -L -o ~/ggml-large-v3-turbo-q5_0.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+
+whisper-server -m ~/ggml-large-v3-turbo-q5_0.bin --port 8080
 ```
 
-Comparing a local Whisper against a hosted one is a two-field change in Settings — that
-comparison was one of the reasons this app is built the way it is.
+Then in Amble: **Settings → Models → Voice to text → whisper.cpp**, endpoint
+`http://127.0.0.1:8080`. Hit **Test connection**. That's it — no API key, nothing uploaded.
 
-## Where your data lives
+Leave `whisper-server` running while you record. To keep it running permanently, wrap it in a
+`launchd` agent or a `tmux` session.
+
+<details>
+<summary><strong>Smaller / larger models</strong></summary>
+
+| Model | Size | Notes |
+|---|---|---|
+| `ggml-base.en.bin` | 141MB | Fastest. Fine for clear solo audio. |
+| `ggml-small.en.bin` | 465MB | Good middle ground. |
+| `ggml-large-v3-turbo-q5_0.bin` | 547MB | **Recommended.** Near-large accuracy, turbo speed. |
+| `ggml-large-v3.bin` | 2.9GB | Best accuracy, noticeably slower. |
+
+All from [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp).
+</details>
+
+<details>
+<summary><strong>Other transcription options</strong></summary>
+
+**speaches** (or any OpenAI-compatible server):
+
+```bash
+docker run -p 8000:8000 ghcr.io/speaches-ai/speaches:latest
+```
+Provider **Local, OpenAI-compatible**, endpoint `http://127.0.0.1:8000/v1`.
+
+**OpenAI** — provider **OpenAI**, model `gpt-4o-mini-transcribe`, plus an API key. This uploads
+your meeting audio.
+
+> **LM Studio and Ollama cannot transcribe.** They serve chat and embeddings only — no
+> `/audio/transcriptions` route — so a speech model loaded in them can't be used here, however
+> promising it looks in their model list.
+</details>
+
+## Set up the chat model
+
+Renders the notes, answers questions, and runs your skills. **Settings → Models → Chat &
+transforms.**
+
+| Provider | Endpoint | Notes |
+|---|---|---|
+| **Ollama** | `http://localhost:11434/v1` | Fully local. `ollama pull llama3.1` |
+| **LM Studio** | `http://localhost:1234/v1` | Fully local, nice model browser |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | One key, any hosted model |
+| **OpenAI** | `https://api.openai.com/v1` | |
+
+API keys go to the **macOS Keychain** — never to a config file, never to this repo.
+
+Pair whisper.cpp with Ollama and Amble is completely offline.
+
+## Grant permission
+
+macOS classifies "record what your speakers are playing" as a **screen-recording** capability, so
+Amble needs it even though it never captures the picture.
+
+1. **Settings → Recording → Screen Recording**, enable Amble
+2. **Quit Amble completely and reopen it** — macOS won't apply the grant to a running process
+3. Press record; macOS asks for the microphone the first time
+
+---
+
+## Recording a meeting
+
+**New meeting** starts recording immediately. Write a line in the prompt box about what you want
+out of it — that steers the live suggestions and the final write-up. Type in **My notes** as you
+go; anything you write there is treated as higher-signal than the machine transcript.
+
+Transcript lines appear every 15–30 seconds. Amble cuts audio at natural pauses rather than on a
+fixed timer, so words don't get sliced in half.
+
+Press **Stop & render** and it writes the meeting up, names it, and runs your after-skills.
+
+## Skills
+
+Reusable prompts, in **Skills & prompts**.
+
+- **During the meeting** — folded into the prompt behind live suggestions. *"Track deliverables,
+  placement, rates and deadlines. Separate what they asked for from what I agreed to."*
+- **After the meeting** — run once against the transcript and the rendered note. *"Write a
+  five-line follow-up email in my voice: what we decided, what I owe them, what I need back, by
+  when."*
+
+Enabled skills attach to every new meeting automatically; add or drop them per meeting from the
+chips above the tabs. Results appear in an **After the meeting** block on the rendered note.
+
+> A skill's "pushes to" target is recorded but **not delivered** — outbound MCP isn't wired up
+> yet, so the output stays on the meeting.
+
+## Connect Claude
+
+Amble runs a local MCP server so Claude can search and read your meetings. Turn it on in
+**Settings → Claude access**.
+
+It binds to `127.0.0.1` only, requires a bearer token, and every tool is **read-only** — Claude
+cannot delete a meeting or start a recording.
+
+**Claude Desktop** — paste into `claude_desktop_config.json` (Settings → Developer → Edit
+config). Desktop can't call an HTTP MCP server with custom headers directly, so this goes via the
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge, which needs Node:
+
+```json
+{
+  "mcpServers": {
+    "amble": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://127.0.0.1:8787/mcp",
+        "--header",
+        "Authorization:${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer <your token from Settings>"
+      }
+    }
+  }
+}
+```
+
+The token lives in `env` rather than inline in `args` because Claude Desktop mangles spaces
+inside an argument, which would corrupt `Bearer <token>`.
+
+**Claude Code** — speaks HTTP natively, no bridge:
+
+```bash
+claude mcp add --transport http amble http://127.0.0.1:8787/mcp \
+  --header "Authorization: Bearer <your token>"
+```
+
+Restart Claude afterwards. Amble must be running for Claude to reach it.
+
+Tools: `search_meetings`, `list_meetings`, `get_meeting`, `get_transcript`, `list_folders`. Any of
+them can be switched off in the same screen — a disabled tool becomes unreachable, not merely
+unlisted.
+
+---
+
+## Your data
 
 ```
 ~/Library/Application Support/com.vibecode.granola/
@@ -129,70 +235,69 @@ comparison was one of the reasons this app is built the way it is.
 └── recordings/     per-chunk WAVs, only if you enable "keep audio files"
 ```
 
-- **API keys go to the macOS Keychain**, never to `config.json` and never into this repo.
-  The UI can ask *whether* a key is set; it can't read one back.
+- **API keys live in the macOS Keychain.** The UI can ask *whether* a key is set; it can't read
+  one back.
 - **Audio is deleted after transcription** unless you opt in to keeping it.
-- Nothing syncs anywhere. The only outbound traffic is to the model provider you choose,
-  and that can be `localhost`.
+- Nothing syncs anywhere. The only outbound traffic goes to the model provider you choose — and
+  that can be `localhost`.
 
-## Project layout
+## How it works
 
 ```
-src-tauri/src/
-├── audio/          ScreenCaptureKit capture, chunking, WAV encoding
-│   ├── macos.rs      the single dual-source capture stream
-│   ├── chunker.rs    pause detection and cut points
-│   └── wav.rs        downmix, resample, encode
-├── db/             SQLite schema and queries (+ FTS5 search)
-├── llm/            OpenAI-compatible chat, streaming
-├── stt/            OpenAI-compatible + whisper.cpp transcription
-├── meeting/        the recording loop, suggestions, write-up, chat
-├── mcp/            MCP tool surface (implemented; transport pending)
-├── settings/       config file + Keychain secrets
-├── prompts.rs      every prompt the app sends, in one place
-└── commands/       the Tauri command surface
-
-src/                React UI
-├── lib/            typed API client, event subscriptions, shared types
-└── components/     sidebar, meeting view, transcript, notes, assistant, settings
+ScreenCaptureKit ──┬── system audio ──┐
+                   └── microphone ────┤
+                                      ▼
+                           cut at natural pauses
+                                      │
+                                      ▼
+                    speech-to-text  (whisper.cpp | OpenAI | …)
+                                      │
+                                      ▼
+                        SQLite  (transcript, notes, chat)
+                                      │
+                   ┌──────────────────┼──────────────────┐
+                   ▼                  ▼                  ▼
+            live suggestions      write-up            chat
+                                      │
+                        chat model  (Ollama | OpenRouter | …)
 ```
 
-`prompts.rs` is a single file on purpose: prompt wording is what you tune most often, and
-hunting it across modules is miserable.
+Three decisions worth knowing:
+
+**System audio comes from ScreenCaptureKit, not a virtual device.** Amble asks for the smallest,
+slowest video stream macOS will give it (2×2 at 1fps) and throws every frame away — the video is
+only there because SCK has no audio-only mode.
+
+**Mic and system audio stay separate all the way to the transcript**, which is where speaker
+attribution comes from. You can turn this off to halve transcription calls.
+
+**Chunks are cut at silence, not on a timer.** Fixed chunking slices words in half and Whisper
+can't recover them. Silent chunks are dropped entirely, which also avoids the stock
+hallucinations Whisper emits on silence ("Thanks for watching!").
 
 ## Development
 
 ```bash
 npm run tauri dev                                  # run the app
-cargo test --manifest-path src-tauri/Cargo.toml    # Rust unit tests
+cargo test --manifest-path src-tauri/Cargo.toml    # Rust tests
 npx tsc --noEmit                                   # typecheck the frontend
-npm run tauri build                                # produce a .app / .dmg
+npm run tauri build                                # .app + .dmg
 ```
 
-`RUST_LOG=vibecode_granola_lib=debug npm run tauri dev` turns on the recording loop's
-internals.
+`RUST_LOG=vibecode_granola_lib=debug npm run tauri dev` for the recording loop's internals.
+See [CLAUDE.md](CLAUDE.md) for the architecture in more depth.
 
-<details>
-<summary><strong>Why <code>src-tauri/.cargo/config.toml</code> exists</strong></summary>
+> Don't launch `target/debug/…` directly — a debug build loads the frontend from Vite on
+> `localhost:1420`, so without the dev server you get a window that opens and renders nothing.
 
-ScreenCaptureKit reaches Apple's frameworks through a Swift bridge, so the binary needs the
-Swift runtime. Those dylibs resolve from the dyld shared cache under `/usr/lib/swift`,
-which is not on the default rpath — without that file you get
-`Library not loaded: @rpath/libswift_Concurrency.dylib` at startup.
-</details>
+## Not done yet
 
-## What's not done yet
-
-- **MCP transport.** The tool surface (`list_meetings`, `get_meeting`, `get_transcript`,
-  `search_meetings`, `list_folders`) is implemented, unit-tested, and callable from the
-  Settings screen. Wiring it to stdio/HTTP so Claude Desktop can connect is the next step —
-  the tools themselves need no further work.
-- **MCP client.** Config shape exists in Settings; no outbound connections yet.
-- **Nested folders.** The schema supports `parentId`; the UI renders a flat list.
-- **Calendar integration**, meeting auto-detection, and audio playback alongside the
-  transcript.
-- **Code signing / notarization.** Local builds are unsigned; `entitlements.plist` is ready
-  for when they aren't.
+- **Outbound MCP.** Connections are configured and stored, but nothing dials out — so a
+  post-skill targeting "Linear · MCP" produces its output without filing anything.
+- **Code signing / notarization.** Builds are unsigned; `entitlements.plist` is ready for when
+  they aren't.
+- **Nested folders.** The schema supports them; the UI is flat.
+- Calendar integration, meeting auto-detection, audio playback alongside the transcript.
 
 ## License
 

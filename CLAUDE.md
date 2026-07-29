@@ -65,6 +65,24 @@ way through: `Source::{Mic,System}` → `segment.source` (`"mic"`/`"system"`/`"m
 
 If you add a source or change a label, all four places must move together.
 
+### Skills
+
+Reusable prompts stored in `skills` and attached to meetings via `meeting_skills`.
+Two kinds, and they enter the pipeline at different points:
+
+- **`live`** — `prompts::with_live_skills` folds their text into the suggestion system
+  prompt, so they steer `meeting::suggest_once` while recording.
+- **`post`** — `meeting::run_post_skills` executes each one after `finalize`, against the
+  transcript plus the rendered note, writing a `skill_runs` row per execution.
+
+`skill_runs` denormalizes `skill_name` and `target` so a run still reads correctly after
+the skill behind it is renamed or deleted. A skill's `target` ("Linear · MCP") is recorded
+but **not delivered** — outbound MCP has no transport, so runs say so rather than implying
+something was filed.
+
+Creating a meeting calls `attach_default_skills`, which attaches every *enabled* skill;
+`enabled` is therefore "on by default for new meetings", not "usable".
+
 ### Model providers
 
 `llm/` and `stt/` both speak the OpenAI shape, which is why switching providers is base URL +
@@ -106,6 +124,14 @@ at runtime.
 
 ## Things that will bite you
 
+- **Never launch `target/debug/vibecode-granola` directly.** A debug build resolves
+  the frontend to `devUrl` (`http://localhost:1420`), not to `dist/` — so without Vite
+  running you get a window that opens, stays alive, and renders nothing. The process
+  looks perfectly healthy from the outside; the only symptom is
+  `Failed to load resource … localhost:1420` in the web inspector. Use
+  `npm run tauri dev`, which starts both. `cargo build` is for compile-checking only,
+  and "the process is running" is not evidence the UI works.
+
 - **`src-tauri/build.rs` adds `-rpath /usr/lib/swift`.** ScreenCaptureKit reaches Apple's
   frameworks through a Swift bridge; without this every binary dies at startup with
   `Library not loaded: @rpath/libswift_Concurrency.dylib`. It is in `build.rs` and **not**
@@ -117,9 +143,14 @@ at runtime.
   way. Granting it requires an app **restart** to take effect. The app asks for a 2×2 @ 1fps
   video stream it discards purely because SCK has no audio-only mode.
 - **All prompt text lives in `prompts.rs`.** Don't inline prompt strings elsewhere.
-- **MCP has no transport yet.** `mcp/tools.rs` is fully implemented, unit-tested, read-only, and
-  callable in-process via the `mcp_tool_call` command. Adding stdio/HTTP means adapting
-  `tools::dispatch` — the tools themselves need no further work.
+- **The MCP server is inbound only.** `mcp/server.rs` is a real Streamable-HTTP endpoint
+  (`POST /mcp`, JSON-RPC 2.0) that Claude Desktop / Claude Code connect to. It binds
+  `127.0.0.1` only, requires the bearer token from `settings.mcp.server_token`, and every
+  exposed tool is read-only — an MCP host cannot delete a meeting or start a recording.
+  A failing tool returns a *result* with `isError: true` rather than a JSON-RPC error, so
+  the model can adapt instead of the host seeing a transport fault.
+  The **outbound** client (`settings.mcp.connections`) is still config-only — nothing dials
+  out, which is why post-skill runs say "not yet sent".
 
 ## Design references
 

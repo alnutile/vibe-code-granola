@@ -24,24 +24,26 @@ export default function TranscriptPane({ segments, isRecording }: Props) {
 
   if (segments.length === 0) {
     return (
-      <div className="pane pane-empty">
-        <p>No transcript yet.</p>
-        <p className="muted small">
+      <div className="doc-empty">
+        <span className="tag tag-neutral">No transcript yet</span>
+        <p>
           {isRecording
-            ? "Listening. Lines appear once there's enough speech to transcribe — usually every 15–30 seconds."
-            : "Press Record to start capturing this meeting."}
+            ? "Listening. Lines appear once there's enough speech to transcribe — usually every 15 to 30 seconds."
+            : "Start recording and the transcript builds here as you talk."}
         </p>
       </div>
     );
   }
 
   return (
-    <div className="pane transcript">
+    <div className="doc-section">
       {segments.map((s) => (
-        <div key={s.id} className={`line line-${s.source}`}>
-          <span className="line-time">{formatMs(s.startMs)}</span>
-          <span className="line-speaker">{SPEAKER[s.source]}</span>
-          <span className="line-text">{s.text}</span>
+        <div className={`t-line ${s.source === "system" ? "is-them" : ""}`} key={s.id}>
+          <span className="t-time">{formatMs(s.startMs)}</span>
+          <div className="t-body">
+            <span className="t-who">{SPEAKER[s.source]}</span>
+            <span className="t-text">{s.text}</span>
+          </div>
         </div>
       ))}
       <div ref={endRef} />

@@ -33,6 +33,48 @@ export interface Meeting {
   updatedAt: string;
 }
 
+/** A meeting plus the two values the sidebar cards show, derived server-side. */
+export interface MeetingListItem extends Meeting {
+  /** First line of the generated summary; null until a write-up exists. */
+  snippet: string | null;
+  /** Recorded length; null while recording or if never started. */
+  durationSecs: number | null;
+}
+
+// -------------------------------------------------------------- written notes
+
+export interface ActionItem {
+  text: string;
+  /** Null when the transcript didn't make the owner clear. */
+  who: string | null;
+  done: boolean;
+}
+
+export interface NoteSection {
+  heading: string;
+  /** Markdown. */
+  body: string;
+}
+
+/** The generated write-up. Stored as JSON so the UI can render real structure. */
+export interface RenderedNotes {
+  summary: string;
+  points: string[];
+  actions: ActionItem[];
+  sections: NoteSection[];
+}
+
+export interface MeetingNotes {
+  rendered: RenderedNotes | null;
+  user: string;
+}
+
+export interface ModelStatus {
+  label: string;
+  local: boolean;
+  needsSetup: boolean;
+}
+
 /** `mic` is you, `system` is everyone else, `mixed` is both on one track. */
 export type SegmentSource = "mic" | "system" | "mixed";
 
@@ -115,19 +157,74 @@ export interface CaptureSettings {
   autoTitle: boolean;
 }
 
-export interface McpClientConfig {
+export type McpTransport = "stdio" | "SSE" | "HTTP";
+
+export interface McpConnection {
+  id: string;
   name: string;
   enabled: boolean;
-  transport: "stdio" | "http";
-  command: string;
-  args: string[];
-  url: string;
+  transport: McpTransport;
+  /** A URL for SSE/HTTP, or the command line for stdio. */
+  target: string;
 }
 
 export interface McpSettings {
   serverEnabled: boolean;
   serverPort: number;
-  clients: McpClientConfig[];
+  serverToken: string;
+  /** Deny-list, so tools added later are exposed unless turned off. */
+  disabledTools: string[];
+  connections: McpConnection[];
+}
+
+export interface ToolToggle {
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface ClaudeAccess {
+  host: string;
+  port: number;
+  token: string;
+  /** For claude_desktop_config.json — goes via the mcp-remote stdio bridge. */
+  desktopConfig: string;
+  /** For Claude Code, which speaks HTTP with headers natively. */
+  cliCommand: string;
+  /** Accepting connections right now. */
+  listening: boolean;
+  /** Switched on by the user — may be true while `listening` is false if the
+   *  port was already taken. */
+  enabled: boolean;
+  tools: ToolToggle[];
+}
+
+// ------------------------------------------------------------------- skills
+
+export type SkillKind = "live" | "post";
+
+export interface Skill {
+  id: string;
+  name: string;
+  kind: SkillKind;
+  /** Where a post-skill's output is meant to go. Empty for none. */
+  target: string;
+  prompt: string;
+  enabled: boolean;
+  isBuiltin: boolean;
+  createdAt: string;
+}
+
+export interface SkillRun {
+  id: string;
+  meetingId: string;
+  skillId: string;
+  skillName: string;
+  target: string;
+  status: "running" | "done" | "error";
+  message: string;
+  output: string;
+  createdAt: string;
 }
 
 export interface Settings {

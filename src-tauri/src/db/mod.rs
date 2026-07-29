@@ -39,6 +39,7 @@ impl Db {
             conn: Arc::new(Mutex::new(conn)),
         };
         db.seed_builtin_templates()?;
+        db.seed_builtin_skills()?;
         Ok(db)
     }
 
@@ -50,6 +51,7 @@ impl Db {
             conn: Arc::new(Mutex::new(conn)),
         };
         db.seed_builtin_templates()?;
+        db.seed_builtin_skills()?;
         Ok(db)
     }
 
@@ -136,6 +138,244 @@ impl Db {
             )
             .optional()?;
         Ok(t)
+    }
+
+    // -------------------------------------------------------------------- skills
+
+    fn seed_builtin_skills(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        let already: i64 =
+            conn.query_row("SELECT COUNT(*) FROM skills WHERE is_builtin = 1", [], |r| {
+                r.get(0)
+            })?;
+        if already > 0 {
+            return Ok(());
+        }
+
+        for (name, kind, target, prompt, enabled) in crate::prompts::BUILTIN_SKILLS {
+            conn.execute(
+                "INSERT INTO skills (id, name, kind, target, prompt, enabled, is_builtin, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+                params![new_id(), name, kind, target, prompt, *enabled as i64, now()],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn map_skill(r: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
+        Ok(Skill {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            kind: r.get(2)?,
+            target: r.get(3)?,
+            prompt: r.get(4)?,
+            enabled: r.get::<_, i64>(5)? != 0,
+            is_builtin: r.get::<_, i64>(6)? != 0,
+            created_at: r.get(7)?,
+        })
+    }
+
+    const SKILL_COLS: &'static str =
+        "id, name, kind, target, prompt, enabled, is_builtin, created_at";
+
+    pub fn list_skills(&self) -> Result<Vec<Skill>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM skills ORDER BY kind DESC, name",
+            Self::SKILL_COLS
+        ))?;
+        let rows = stmt
+            .query_map([], Self::map_skill)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_skill(&self, id: &str) -> Result<Option<Skill>> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .query_row(
+                &format!("SELECT {} FROM skills WHERE id = ?1", Self::SKILL_COLS),
+                params![id],
+                Self::map_skill,
+            )
+            .optional()?)
+    }
+
+    pub fn create_skill(&self, name: &str, kind: &str, target: &str, prompt: &str) -> Result<Skill> {
+        let s = Skill {
+            id: new_id(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            target: target.to_string(),
+            prompt: prompt.to_string(),
+            enabled: true,
+            is_builtin: false,
+            created_at: now(),
+        };
+        self.conn.lock().execute(
+            "INSERT INTO skills (id, name, kind, target, prompt, enabled, is_builtin, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, 0, ?6)",
+            params![s.id, s.name, s.kind, s.target, s.prompt, s.created_at],
+        )?;
+        Ok(s)
+    }
+
+    /// Partial update — each `None` field is left as-is.
+    pub fn update_skill(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        kind: Option<&str>,
+        target: Option<&str>,
+        prompt: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        if let Some(v) = name {
+            conn.execute("UPDATE skills SET name = ?2 WHERE id = ?1", params![id, v])?;
+        }
+        if let Some(v) = kind {
+            conn.execute("UPDATE skills SET kind = ?2 WHERE id = ?1", params![id, v])?;
+        }
+        if let Some(v) = target {
+            conn.execute("UPDATE skills SET target = ?2 WHERE id = ?1", params![id, v])?;
+        }
+        if let Some(v) = prompt {
+            conn.execute("UPDATE skills SET prompt = ?2 WHERE id = ?1", params![id, v])?;
+        }
+        if let Some(v) = enabled {
+            conn.execute(
+                "UPDATE skills SET enabled = ?2 WHERE id = ?1",
+                params![id, v as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM skills WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------- skill attachments
+
+    /// Skills attached to a meeting, newest-attached last.
+    pub fn meeting_skills(&self, meeting_id: &str) -> Result<Vec<Skill>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM skills s
+             JOIN meeting_skills ms ON ms.skill_id = s.id
+             WHERE ms.meeting_id = ?1
+             ORDER BY s.kind DESC, s.name",
+            Self::SKILL_COLS
+                .split(", ")
+                .map(|c| format!("s.{c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))?;
+        let rows = stmt
+            .query_map(params![meeting_id], Self::map_skill)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn attach_skill(&self, meeting_id: &str, skill_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT OR IGNORE INTO meeting_skills (meeting_id, skill_id) VALUES (?1, ?2)",
+            params![meeting_id, skill_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn detach_skill(&self, meeting_id: &str, skill_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM meeting_skills WHERE meeting_id = ?1 AND skill_id = ?2",
+            params![meeting_id, skill_id],
+        )?;
+        Ok(())
+    }
+
+    /// Attach every enabled skill to a fresh meeting.
+    ///
+    /// New meetings start with your defaults already on, which is the point of
+    /// marking a skill enabled — you turn it off in one place, not per meeting.
+    pub fn attach_default_skills(&self, meeting_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT OR IGNORE INTO meeting_skills (meeting_id, skill_id)
+             SELECT ?1, id FROM skills WHERE enabled = 1",
+            params![meeting_id],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- skill runs
+
+    pub fn create_run(&self, meeting_id: &str, skill: &Skill) -> Result<SkillRun> {
+        let r = SkillRun {
+            id: new_id(),
+            meeting_id: meeting_id.to_string(),
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            target: skill.target.clone(),
+            status: "running".into(),
+            message: "Working…".into(),
+            output: String::new(),
+            created_at: now(),
+        };
+        self.conn.lock().execute(
+            "INSERT INTO skill_runs
+               (id, meeting_id, skill_id, skill_name, target, status, message, output, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                r.id, r.meeting_id, r.skill_id, r.skill_name, r.target,
+                r.status, r.message, r.output, r.created_at
+            ],
+        )?;
+        Ok(r)
+    }
+
+    pub fn finish_run(&self, id: &str, status: &str, message: &str, output: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE skill_runs SET status = ?2, message = ?3, output = ?4 WHERE id = ?1",
+            params![id, status, message, output],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_runs(&self, meeting_id: &str) -> Result<Vec<SkillRun>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, meeting_id, skill_id, skill_name, target, status, message, output, created_at
+             FROM skill_runs WHERE meeting_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt
+            .query_map(params![meeting_id], |r| {
+                Ok(SkillRun {
+                    id: r.get(0)?,
+                    meeting_id: r.get(1)?,
+                    skill_id: r.get(2)?,
+                    skill_name: r.get(3)?,
+                    target: r.get(4)?,
+                    status: r.get(5)?,
+                    message: r.get(6)?,
+                    output: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Clear previous runs so re-running a meeting's post-skills replaces the
+    /// old results instead of stacking duplicates.
+    pub fn clear_runs(&self, meeting_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM skill_runs WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        Ok(())
     }
 
     // ------------------------------------------------------------------- folders
@@ -233,6 +473,52 @@ impl Db {
             )
             .optional()?;
         Ok(m)
+    }
+
+    /// Meetings with the derived fields the sidebar cards need.
+    ///
+    /// One query with a LEFT JOIN onto the generated note, rather than a list
+    /// query plus a note lookup per meeting.
+    pub fn list_meeting_items(&self, folder_id: Option<&str>) -> Result<Vec<MeetingListItem>> {
+        let rows = {
+            let conn = self.conn.lock();
+            const SQL: &str = "SELECT m.id, m.folder_id, m.template_id, m.title, m.prompt, m.status,
+                        m.audio_dir, m.started_at, m.ended_at, m.created_at, m.updated_at,
+                        n.content
+                 FROM meetings m
+                 LEFT JOIN notes n ON n.meeting_id = m.id AND n.kind = 'ai'";
+
+            let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(Meeting, Option<String>)> {
+                Ok((Self::map_meeting(r)?, r.get(11)?))
+            };
+
+            let mut stmt;
+            match folder_id {
+                Some(fid) => {
+                    stmt = conn.prepare(&format!(
+                        "{SQL} WHERE m.folder_id = ?1 ORDER BY m.created_at DESC"
+                    ))?;
+                    stmt.query_map(params![fid], map)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                }
+                None => {
+                    stmt = conn.prepare(&format!("{SQL} ORDER BY m.created_at DESC"))?;
+                    stmt.query_map([], map)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                }
+            }
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|(meeting, note)| MeetingListItem {
+                snippet: note
+                    .map(|c| crate::notes::parse(&c).snippet(110))
+                    .filter(|s| !s.is_empty()),
+                duration_secs: duration_secs(&meeting),
+                meeting,
+            })
+            .collect())
     }
 
     pub fn list_meetings(&self, folder_id: Option<&str>) -> Result<Vec<Meeting>> {
@@ -594,6 +880,17 @@ impl Db {
     }
 }
 
+/// Recorded length, from the timestamps written when recording started and stopped.
+/// `None` while still recording, or if either timestamp is missing or unparseable.
+fn duration_secs(m: &Meeting) -> Option<i64> {
+    let start = m.started_at.as_deref()?;
+    let end = m.ended_at.as_deref()?;
+    let start = chrono::DateTime::parse_from_rfc3339(start).ok()?;
+    let end = chrono::DateTime::parse_from_rfc3339(end).ok()?;
+    let secs = (end - start).num_seconds();
+    (secs >= 0).then_some(secs)
+}
+
 /// `[mm:ss] Speaker: text`, one line per segment.
 ///
 /// Speaker labels come from the capture source rather than a diarization model —
@@ -651,6 +948,132 @@ mod tests {
 
         assert!(db.list_segments(&m.id).unwrap().is_empty());
         assert!(db.list_chat_messages(&m.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_items_derive_a_snippet_from_the_generated_notes() {
+        let db = Db::open_in_memory().unwrap();
+        let m = db.create_meeting("Roadmap", "", None, None).unwrap();
+        db.upsert_note(
+            &m.id,
+            "ai",
+            r#"{"summary":"The team agreed to cut pricing to three plans.","points":[]}"#,
+        )
+        .unwrap();
+
+        let items = db.list_meeting_items(None).unwrap();
+        assert_eq!(
+            items[0].snippet.as_deref(),
+            Some("The team agreed to cut pricing to three plans.")
+        );
+    }
+
+    #[test]
+    fn list_items_have_no_snippet_or_duration_before_a_meeting_runs() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_meeting("Fresh", "", None, None).unwrap();
+
+        let items = db.list_meeting_items(None).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].snippet.is_none());
+        assert!(items[0].duration_secs.is_none(), "not started, so no duration");
+    }
+
+    #[test]
+    fn duration_comes_from_the_recorded_timestamps() {
+        let mut m = Meeting {
+            id: "x".into(),
+            folder_id: None,
+            template_id: None,
+            title: "t".into(),
+            prompt: String::new(),
+            status: "done".into(),
+            audio_dir: None,
+            started_at: Some("2026-07-28T10:00:00Z".into()),
+            ended_at: Some("2026-07-28T10:42:30Z".into()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        assert_eq!(duration_secs(&m), Some(2550));
+
+        // Still recording.
+        m.ended_at = None;
+        assert_eq!(duration_secs(&m), None);
+
+        // Clock skew shouldn't surface as a negative duration.
+        m.ended_at = Some("2026-07-28T09:00:00Z".into());
+        assert_eq!(duration_secs(&m), None);
+    }
+
+    #[test]
+    fn new_meetings_get_the_enabled_skills_and_not_the_disabled_ones() {
+        let db = Db::open_in_memory().unwrap();
+        let on = db.create_skill("Always on", "live", "", "p", ).unwrap();
+        let off = db.create_skill("Turned off", "post", "Linear", "p").unwrap();
+        db.update_skill(&off.id, None, None, None, None, Some(false)).unwrap();
+
+        let m = db.create_meeting("Kickoff", "", None, None).unwrap();
+        db.attach_default_skills(&m.id).unwrap();
+
+        let attached: Vec<_> = db.meeting_skills(&m.id).unwrap().into_iter().map(|s| s.id).collect();
+        assert!(attached.contains(&on.id));
+        assert!(!attached.contains(&off.id), "disabled skills should not auto-attach");
+    }
+
+    #[test]
+    fn skills_attach_and_detach_without_duplicating() {
+        let db = Db::open_in_memory().unwrap();
+        let s = db.create_skill("One", "live", "", "p").unwrap();
+        let m = db.create_meeting("M", "", None, None).unwrap();
+
+        db.attach_skill(&m.id, &s.id).unwrap();
+        db.attach_skill(&m.id, &s.id).unwrap();
+        assert_eq!(db.meeting_skills(&m.id).unwrap().len(), 1, "attach is idempotent");
+
+        db.detach_skill(&m.id, &s.id).unwrap();
+        assert!(db.meeting_skills(&m.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_run_keeps_its_skill_name_after_the_skill_is_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        let skill = db
+            .create_skill("Draft the follow-up", "post", "Gmail draft", "p")
+            .unwrap();
+        let m = db.create_meeting("M", "", None, None).unwrap();
+
+        let run = db.create_run(&m.id, &skill).unwrap();
+        db.finish_run(&run.id, "done", "Drafted", "Hi there,").unwrap();
+        db.delete_skill(&skill.id).unwrap();
+
+        let runs = db.list_runs(&m.id).unwrap();
+        assert_eq!(runs.len(), 1, "the run outlives the skill");
+        assert_eq!(runs[0].skill_name, "Draft the follow-up");
+        assert_eq!(runs[0].target, "Gmail draft");
+        assert_eq!(runs[0].output, "Hi there,");
+    }
+
+    #[test]
+    fn clearing_runs_lets_a_rerun_replace_rather_than_stack() {
+        let db = Db::open_in_memory().unwrap();
+        let skill = db.create_skill("S", "post", "", "p").unwrap();
+        let m = db.create_meeting("M", "", None, None).unwrap();
+
+        db.create_run(&m.id, &skill).unwrap();
+        db.clear_runs(&m.id).unwrap();
+        db.create_run(&m.id, &skill).unwrap();
+
+        assert_eq!(db.list_runs(&m.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn builtin_skills_are_seeded_once() {
+        let db = Db::open_in_memory().unwrap();
+        let first = db.list_skills().unwrap().len();
+        assert!(first >= 4, "expected the builtin skills, got {first}");
+        // Re-seeding is a no-op — a deleted builtin stays deleted.
+        db.seed_builtin_skills().unwrap();
+        assert_eq!(db.list_skills().unwrap().len(), first);
     }
 
     #[test]

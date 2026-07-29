@@ -1,44 +1,72 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
-import { subscribe } from "../lib/events";
-import type { Meeting, Note, Segment, Suggestion, Template } from "../lib/types";
+import { formatClock, formatDuration, formatWhen, subscribe } from "../lib/events";
+import type {
+  Folder,
+  Meeting,
+  MeetingNotes,
+  RenderedNotes,
+  Segment,
+  Skill,
+  SkillRun,
+  Suggestion,
+  Template,
+} from "../lib/types";
+import ChatAside from "./ChatAside";
+import RenderedPane from "./RenderedPane";
 import TranscriptPane from "./TranscriptPane";
-import NotesPane from "./NotesPane";
-import AssistantPane from "./AssistantPane";
+import { ChatIcon, MicIcon, StopIcon } from "./Icons";
 
 interface Props {
   meetingId: string;
+  folders: Folder[];
   isRecording: boolean;
-  /** A different meeting is recording — starting this one would fail. */
+  /** A different meeting holds the recorder — this one can't start. */
   anotherRecording: boolean;
+  chatOpen: boolean;
+  onToggleChat: () => void;
   onChanged: () => void;
 }
 
-type Tab = "notes" | "transcript";
+type Tab = "rendered" | "raw" | "transcript";
 
-export default function MeetingView({ meetingId, isRecording, anotherRecording, onChanged }: Props) {
+const WAVE_BARS = 14;
+// Fixed offsets, not random: the design's staggered look, but stable across
+// renders so the bars don't resync every time state changes.
+const WAVE_DELAYS = [0, 0.08, 0.31, 0.17, 0.44, 0.22, 0.51, 0.12, 0.37, 0.6, 0.05, 0.28, 0.47, 0.19];
+
+export default function MeetingView(props: Props) {
+  const { meetingId } = props;
+
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [notes, setNotes] = useState<MeetingNotes>({ rendered: null, user: "" });
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [levels, setLevels] = useState({ mic: 0, system: 0 });
+  const [allSkills, setAllSkills] = useState<Skill[]>([]);
+  const [attached, setAttached] = useState<Skill[]>([]);
+  const [runs, setRuns] = useState<SkillRun[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("notes");
+  const [tab, setTab] = useState<Tab>("rendered");
   const [busy, setBusy] = useState(false);
 
-  // Load everything for this meeting.
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const [m, t, s, n, g] = await Promise.all([
+        const [m, t, s, n, g, sk, att, r] = await Promise.all([
           api.getMeeting(meetingId),
           api.listTemplates(),
           api.listSegments(meetingId),
-          api.listNotes(meetingId),
+          api.getNotes(meetingId),
           api.listSuggestions(meetingId),
+          api.listSkills(),
+          api.meetingSkills(meetingId),
+          api.skillRuns(meetingId),
         ]);
         if (!alive) return;
         setMeeting(m);
@@ -46,6 +74,12 @@ export default function MeetingView({ meetingId, isRecording, anotherRecording, 
         setSegments(s);
         setNotes(n);
         setSuggestions(g);
+        setAllSkills(sk);
+        setAttached(att);
+        setRuns(r);
+        // A meeting with no write-up yet opens on the notes you can actually
+        // type into, rather than an empty rendered page.
+        if (!n.rendered) setTab(m.status === "recording" ? "raw" : "rendered");
       } catch (e) {
         if (alive) setError(api.errorMessage(e));
       }
@@ -55,62 +89,79 @@ export default function MeetingView({ meetingId, isRecording, anotherRecording, 
     };
   }, [meetingId]);
 
-  // Live updates. Every handler filters by meeting id — events are broadcast to
-  // the whole window, and a background meeting must not write into this view.
+  // Every handler filters by meeting id: events broadcast to the whole window,
+  // and a meeting recording in the background must not write into this view.
   useEffect(
     () =>
       subscribe({
-        onSegment: (s) => {
-          if (s.meetingId === meetingId) setSegments((prev) => [...prev, s]);
-        },
+        onSegment: (s) => s.meetingId === meetingId && setSegments((p) => [...p, s]),
+        onSuggestion: (s) => s.meetingId === meetingId && setSuggestions((p) => [...p, s]),
         onLevels: (l) => {
-          if (l.meetingId === meetingId) setLevels({ mic: l.mic, system: l.system });
-        },
-        onSuggestion: (s) => {
-          if (s.meetingId === meetingId) setSuggestions((prev) => [...prev, s]);
+          if (l.meetingId === meetingId) setLevel(Math.max(l.mic, l.system));
         },
         onNotes: (n) => {
           if (n.meetingId !== meetingId) return;
-          setNotes((prev) => {
-            const others = prev.filter((x) => x.kind !== "ai");
-            const existing = prev.find((x) => x.kind === "ai");
-            return [
-              ...others,
-              {
-                ...(existing ?? {
-                  id: "ai",
-                  meetingId,
-                  kind: "ai" as const,
-                  createdAt: new Date().toISOString(),
-                }),
-                content: n.content,
-                updatedAt: new Date().toISOString(),
-              } as Note,
-            ];
-          });
-          setTab("notes");
+          setNotes((p) => ({ ...p, rendered: n.notes }));
+          setTab("rendered");
+        },
+        onRuns: (e) => {
+          if (e.meetingId === meetingId) setRuns(e.runs);
         },
         onStatus: (e) => {
           if (e.meetingId !== meetingId) return;
           setStatus(e.message ?? null);
-          setMeeting((prev) => (prev ? { ...prev, status: e.status as Meeting["status"] } : prev));
+          setMeeting((p) => (p ? { ...p, status: e.status as Meeting["status"] } : p));
           if (e.status === "done") {
             void api.getMeeting(meetingId).then(setMeeting).catch(() => {});
-            void api.listNotes(meetingId).then(setNotes).catch(() => {});
+            void api.getNotes(meetingId).then(setNotes).catch(() => {});
           }
         },
       }),
     [meetingId],
   );
 
+  // Recording timer. Anchored to the meeting's own start time so reopening the
+  // window mid-meeting shows the true elapsed time, not time-since-mounted.
+  useEffect(() => {
+    if (!props.isRecording) {
+      setElapsed(0);
+      return;
+    }
+    const started = meeting?.startedAt ? new Date(meeting.startedAt).getTime() : Date.now();
+    const tick = () => setElapsed((Date.now() - started) / 1000);
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [props.isRecording, meeting?.startedAt]);
+
   const patch = async (p: Parameters<typeof api.updateMeeting>[1]) => {
     if (!meeting) return;
     setMeeting({ ...meeting, ...p } as Meeting);
     try {
       await api.updateMeeting(meetingId, p);
-      onChanged();
+      props.onChanged();
     } catch (e) {
       setError(api.errorMessage(e));
+    }
+  };
+
+  const attach = async (skillId: string) => {
+    setPickerOpen(false);
+    try {
+      await api.attachSkill(meetingId, skillId);
+      setAttached(await api.meetingSkills(meetingId));
+    } catch (e) {
+      setError(api.errorMessage(e));
+    }
+  };
+
+  const detach = async (skillId: string) => {
+    setAttached((prev) => prev.filter((s) => s.id !== skillId));
+    try {
+      await api.detachSkill(meetingId, skillId);
+    } catch (e) {
+      setError(api.errorMessage(e));
+      setAttached(await api.meetingSkills(meetingId));
     }
   };
 
@@ -118,8 +169,11 @@ export default function MeetingView({ meetingId, isRecording, anotherRecording, 
     setError(null);
     setBusy(true);
     try {
-      if (isRecording) await api.stopRecording(meetingId);
-      else await api.startRecording(meetingId);
+      if (props.isRecording) await api.stopRecording(meetingId);
+      else {
+        await api.startRecording(meetingId);
+        setTab("raw");
+      }
     } catch (e) {
       setError(api.errorMessage(e));
     } finally {
@@ -128,145 +182,297 @@ export default function MeetingView({ meetingId, isRecording, anotherRecording, 
   };
 
   if (!meeting) {
-    return <div className="pane-loading">{error ?? "Loading…"}</div>;
+    return (
+      <section className="stage">
+        <div className="blank">
+          <p>{error ?? "Loading…"}</p>
+        </div>
+      </section>
+    );
   }
 
-  const aiNote = notes.find((n) => n.kind === "ai");
-  const userNote = notes.find((n) => n.kind === "user");
+  const folderName = props.folders.find((f) => f.id === meeting.folderId)?.name;
+  const duration = formatDuration(
+    meeting.startedAt && meeting.endedAt
+      ? (new Date(meeting.endedAt).getTime() - new Date(meeting.startedAt).getTime()) / 1000
+      : null,
+  );
+
+  // RMS is small even for loud speech; scale it into a visible amplitude and
+  // hold a floor so the bars read as "listening" rather than "dead".
+  const amp = Math.min(1, Math.max(0.12, level * 5));
+
+  const attachedIds = new Set(attached.map((s) => s.id));
+  const pickable = allSkills.filter((s) => !attachedIds.has(s.id));
 
   return (
-    <div className="meeting">
-      <header className="meeting-header">
-        <div className="meeting-header-row">
-          <input
-            className="title-input"
-            value={meeting.title}
-            placeholder="Untitled meeting"
-            onChange={(e) => setMeeting({ ...meeting, title: e.target.value })}
-            onBlur={(e) => void patch({ title: e.target.value })}
-          />
+    <>
+      <section className="stage">
+        <div className="stage-head">
+          <div className="stage-head-row">
+            <div className="stage-head-main">
+              <input
+                className="stage-title"
+                value={meeting.title}
+                placeholder="Untitled meeting"
+                onChange={(e) => setMeeting({ ...meeting, title: e.target.value })}
+                onBlur={(e) => void patch({ title: e.target.value })}
+              />
 
-          <div className="record-controls">
-            {isRecording && <LevelMeters mic={levels.mic} system={levels.system} />}
-            <button
-              className={`btn ${isRecording ? "btn-stop" : "btn-record"}`}
-              onClick={toggleRecording}
-              disabled={busy || (anotherRecording && !isRecording)}
-              title={
-                anotherRecording && !isRecording
-                  ? "Another meeting is recording. Stop it first."
-                  : undefined
-              }
-            >
-              {isRecording ? "■ Stop" : "● Record"}
-            </button>
+              <div className="stage-meta">
+                <select
+                  className="input"
+                  value={meeting.folderId ?? ""}
+                  onChange={(e) => void patch({ folderId: e.target.value || null })}
+                  title="Folder"
+                >
+                  <option value="">No folder</option>
+                  {props.folders.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+
+                <span>
+                  {formatWhen(meeting.startedAt ?? meeting.createdAt)}
+                  {duration && ` · ${duration}`}
+                </span>
+
+                <select
+                  className="input"
+                  value={meeting.templateId ?? ""}
+                  onChange={(e) => void patch({ templateId: e.target.value || null })}
+                  title="Write-up style"
+                >
+                  <option value="">General meeting</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+
+                {status && <span className="tag tag-accent-2">{status}</span>}
+                {folderName === undefined && meeting.folderId && (
+                  <span className="tag tag-neutral">Unfiled</span>
+                )}
+              </div>
+            </div>
+
+            {!props.chatOpen && (
+              <button className="btn btn-secondary" onClick={props.onToggleChat}>
+                <ChatIcon />
+                Ask
+              </button>
+            )}
           </div>
-        </div>
 
-        <textarea
-          className="prompt-input"
-          rows={2}
-          placeholder="What's this meeting about, and what do you want out of it? This steers the live suggestions and the write-up."
-          value={meeting.prompt}
-          onChange={(e) => setMeeting({ ...meeting, prompt: e.target.value })}
-          onBlur={(e) => void patch({ prompt: e.target.value })}
-        />
-
-        <div className="meeting-header-row small">
-          <label className="field-inline">
-            Write-up style
-            <select
-              value={meeting.templateId ?? ""}
-              onChange={(e) => void patch({ templateId: e.target.value || null })}
-            >
-              <option value="">General meeting</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {status && <span className="status-pill">{status}</span>}
-          {meeting.status === "processing" && !status && (
-            <span className="status-pill">Finishing up…</span>
+          {props.isRecording ? (
+            <div className="rec-bar">
+              <span className="rec-dot" />
+              <span className="rec-timer">{formatClock(elapsed)}</span>
+              <div className="wave">
+                {Array.from({ length: WAVE_BARS }, (_, i) => (
+                  <span
+                    key={i}
+                    className="wave-bar"
+                    style={
+                      {
+                        animationDelay: `${WAVE_DELAYS[i]}s`,
+                        "--amp": amp,
+                      } as React.CSSProperties
+                    }
+                  />
+                ))}
+              </div>
+              <button className="btn btn-primary" onClick={toggleRecording} disabled={busy}>
+                <StopIcon />
+                Stop &amp; render
+              </button>
+            </div>
+          ) : (
+            <div className="idle-bar">
+              <button
+                className="btn btn-secondary"
+                onClick={toggleRecording}
+                disabled={busy || props.anotherRecording}
+                title={
+                  props.anotherRecording
+                    ? "Another meeting is recording. Stop that one first."
+                    : undefined
+                }
+              >
+                <MicIcon />
+                {segments.length > 0 ? "Record more" : "Start recording"}
+              </button>
+              <span>
+                {props.anotherRecording
+                  ? "Another meeting is recording."
+                  : "Audio stays on device. Type alongside it — the model fills the gaps afterwards."}
+              </span>
+            </div>
           )}
-        </div>
-      </header>
 
-      {error && (
-        <div className="banner banner-error">
-          <span>{error}</span>
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
+          <div className="skills-bar">
+            <div className="row">
+              <span className="skills-label">Skills in this meeting</span>
+              {attached.map((s) => (
+                <span className="tag tag-accent skill-chip" key={s.id}>
+                  {s.name}
+                  <span className="skill-chip-when">{s.kind === "live" ? "live" : "after"}</span>
+                  <button
+                    aria-label={`Remove ${s.name}`}
+                    onClick={() => void detach(s.id)}
+                    className="skill-chip-x"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {pickable.length > 0 && (
+                <button
+                  className="tag tag-outline"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => setPickerOpen((o) => !o)}
+                >
+                  + Add skill
+                </button>
+              )}
+            </div>
 
-      <div className="meeting-body">
-        <section className="meeting-left">
-          <div className="tabs">
-            <button className={tab === "notes" ? "active" : ""} onClick={() => setTab("notes")}>
-              Notes
-            </button>
-            <button
-              className={tab === "transcript" ? "active" : ""}
-              onClick={() => setTab("transcript")}
-            >
-              Transcript {segments.length > 0 && <span className="count">{segments.length}</span>}
-            </button>
+            {pickerOpen && (
+              <div className="skill-picker elev-sm">
+                {pickable.map((s) => (
+                  <button key={s.id} className="skill-pick" onClick={() => void attach(s.id)}>
+                    <span className="grow">{s.name}</span>
+                    <span className="tag tag-neutral">
+                      {s.kind === "live" ? "During" : "After"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {tab === "notes" ? (
-            <NotesPane
+          <div className="seg" style={{ alignSelf: "flex-start" }}>
+            {(
+              [
+                ["rendered", "Rendered"],
+                ["raw", "My notes"],
+                ["transcript", `Transcript${segments.length ? ` (${segments.length})` : ""}`],
+              ] as [Tab, string][]
+            ).map(([key, label]) => (
+              <label className="seg-opt" key={key}>
+                <input
+                  type="radio"
+                  name="amble-tab"
+                  checked={tab === key}
+                  onChange={() => setTab(key)}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {error && (
+          <div className="banner banner-error">
+            <span>{error}</span>
+            <button className="btn btn-ghost" onClick={() => setError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="doc">
+          {tab === "rendered" && (
+            <RenderedPane
               meetingId={meetingId}
-              aiNote={aiNote}
-              userNote={userNote}
+              notes={notes.rendered}
+              runs={runs}
+              hasPostSkills={attached.some((s) => s.kind === "post")}
               hasTranscript={segments.length > 0}
-              onUserNoteSaved={(n) =>
-                setNotes((prev) => [...prev.filter((x) => x.kind !== "user"), n])
-              }
+              onNotes={(n: RenderedNotes) => setNotes((p) => ({ ...p, rendered: n }))}
               onError={setError}
             />
-          ) : (
-            <TranscriptPane segments={segments} isRecording={isRecording} />
           )}
-        </section>
 
-        <AssistantPane
+          {tab === "raw" && (
+            <RawNotes
+              meetingId={meetingId}
+              value={notes.user}
+              onChange={(v) => setNotes((p) => ({ ...p, user: v }))}
+              onError={setError}
+            />
+          )}
+
+          {tab === "transcript" && (
+            <TranscriptPane segments={segments} isRecording={props.isRecording} />
+          )}
+        </div>
+      </section>
+
+      {props.chatOpen && (
+        <ChatAside
           meetingId={meetingId}
           suggestions={suggestions}
-          isRecording={isRecording}
+          isRecording={props.isRecording}
           hasTranscript={segments.length > 0}
+          onClose={props.onToggleChat}
           onError={setError}
         />
-      </div>
-    </div>
+      )}
+    </>
   );
 }
 
-/**
- * Live input levels, so it's obvious at a glance whether audio is actually
- * arriving — the single most common "is this thing on?" moment.
- */
-function LevelMeters({ mic, system }: { mic: number; system: number }) {
-  return (
-    <div className="meters">
-      <Meter label="Mic" value={mic} />
-      <Meter label="Sys" value={system} />
-    </div>
+/** The "My notes" tab: a plain textarea that autosaves. */
+function RawNotes({
+  meetingId,
+  value,
+  onChange,
+  onError,
+}: {
+  meetingId: string;
+  value: string;
+  onChange: (v: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const timer = useRef<number | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const edit = (v: string) => {
+    onChange(v);
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      setSaving(true);
+      api
+        .saveNote(meetingId, v)
+        .catch((e) => onError(api.errorMessage(e)))
+        .finally(() => setSaving(false));
+    }, 700);
+  };
+
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
   );
-}
-
-function Meter({ label, value }: { label: string; value: number }) {
-  // RMS runs small even for loud speech, so scale it into something visible.
-  const pct = Math.min(100, Math.round(value * 400));
 
   return (
-    <div className="meter" title={`${label} level`}>
-      <span className="meter-label">{label}</span>
-      <div className="meter-track">
-        <div className="meter-fill" style={{ width: `${pct}%` }} />
+    <div className="doc-section">
+      <div className="doc-hint">
+        {saving ? "Saving…" : "Yours, untouched. The model reads these but never overwrites them."}
       </div>
+      <textarea
+        className="input"
+        style={{ minHeight: 340, lineHeight: 1.7, fontSize: 15 }}
+        value={value}
+        placeholder="Type as you go. Whatever you write here is treated as higher-signal than the transcript when the write-up is generated."
+        onChange={(e) => edit(e.target.value)}
+      />
     </div>
   );
 }

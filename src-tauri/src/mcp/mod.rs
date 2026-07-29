@@ -9,6 +9,7 @@
 //! transport means adapting [`tools::dispatch`] to it — the tools themselves need
 //! no further work, and can be exercised from the app today.
 
+pub mod server;
 pub mod tools;
 
 use crate::error::Result;
@@ -38,6 +39,27 @@ pub struct ClientStatus {
     pub connected: bool,
 }
 
+/// A tool plus whether hosts are currently allowed to call it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolToggle {
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+/// Every tool, with the deny-list applied.
+pub fn tool_toggles(settings: &McpSettings) -> Vec<ToolToggle> {
+    tools::definitions()
+        .into_iter()
+        .map(|t| ToolToggle {
+            enabled: !settings.disabled_tools.contains(&t.name),
+            name: t.name,
+            description: t.description,
+        })
+        .collect()
+}
+
 pub fn status(settings: &McpSettings) -> Result<McpStatus> {
     Ok(McpStatus {
         server_enabled: settings.server_enabled,
@@ -46,7 +68,7 @@ pub fn status(settings: &McpSettings) -> Result<McpStatus> {
         server_port: settings.server_port,
         exposed_tools: tools::definitions(),
         clients: settings
-            .clients
+            .connections
             .iter()
             .map(|c| ClientStatus {
                 name: c.name.clone(),

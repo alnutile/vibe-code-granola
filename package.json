@@ -1,5 +1,5 @@
 {
-  "name": "vibecode-granola",
+  "name": "amble",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -23,5 +23,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
-  }
+  },
+  "description": "A local-first meeting recorder and AI notepad for macOS",
+  "license": "MIT"
 }

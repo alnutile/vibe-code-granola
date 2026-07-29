@@ -7,7 +7,7 @@ use crate::llm::LlmClient;
 use crate::settings::{Paths, SecretStore, Settings};
 use crate::stt::SttClient;
 use parking_lot::{Mutex, RwLock};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The meeting currently being recorded. At most one at a time — recording two
@@ -28,12 +28,23 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     pub secrets: SecretStore,
     pub active: Mutex<Option<ActiveMeeting>>,
+    /// The local MCP endpoint, when running. A tokio mutex because shutting the
+    /// server down awaits the socket closing.
+    pub mcp_server: tokio::sync::Mutex<Option<crate::mcp::server::ServerHandle>>,
+    /// Mirrors whether `mcp_server` is `Some`, readable without taking the lock
+    /// — the settings screen asks on every render.
+    mcp_listening: AtomicBool,
 }
 
 impl AppState {
     pub fn new() -> Result<Self> {
         let paths = Paths::resolve()?;
-        let settings = Settings::load(&paths.config);
+        let mut settings = Settings::load(&paths.config);
+        // Mint the MCP token on first run and persist it, so the config the
+        // Claude settings tab shows stays the same across restarts.
+        if settings.ensure_server_token() {
+            settings.save(&paths.config)?;
+        }
         let db = Db::open(&paths.db)?;
 
         tracing::info!(root = ?paths.root, "app data directory ready");
@@ -44,7 +55,35 @@ impl AppState {
             settings: RwLock::new(settings),
             secrets: SecretStore::new(),
             active: Mutex::new(None),
+            mcp_server: tokio::sync::Mutex::new(None),
+            mcp_listening: AtomicBool::new(false),
         })
+    }
+
+    pub fn mcp_listening(&self) -> bool {
+        self.mcp_listening.load(Ordering::Relaxed)
+    }
+
+    /// Start the local MCP endpoint, replacing any listener already running.
+    ///
+    /// The old one is stopped first and awaited, so restarting on a new port
+    /// cannot race the previous socket still holding it.
+    pub async fn start_mcp(self: &Arc<Self>, port: u16) -> Result<()> {
+        self.stop_mcp().await;
+
+        let handle = crate::mcp::server::start(Arc::clone(self), port).await?;
+        *self.mcp_server.lock().await = Some(handle);
+        self.mcp_listening.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub async fn stop_mcp(&self) {
+        let existing = self.mcp_server.lock().await.take();
+        if let Some(handle) = existing {
+            handle.stop().await;
+            tracing::info!("MCP server stopped");
+        }
+        self.mcp_listening.store(false, Ordering::Relaxed);
     }
 
     pub fn settings_snapshot(&self) -> Settings {

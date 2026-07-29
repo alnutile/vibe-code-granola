@@ -105,6 +105,52 @@ CREATE TABLE IF NOT EXISTS suggestions (
 
 CREATE INDEX IF NOT EXISTS idx_suggestions_meeting ON suggestions(meeting_id, at_ms);
 
+-- Skills: reusable prompts that attach to a meeting.
+--
+-- kind 'live' — folded into the in-meeting suggestion prompt, so the skill
+--               steers the model while you are still talking.
+-- kind 'post' — run once after the recording stops, against the transcript and
+--               the rendered note, to produce something (a follow-up draft, a
+--               list of issues to file).
+--
+-- `target` names where a post-skill's output is meant to go ("Linear · MCP").
+-- It is recorded but not yet delivered — see `skill_runs.status`.
+CREATE TABLE IF NOT EXISTS skills (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    target      TEXT NOT NULL DEFAULT '',
+    prompt      TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    is_builtin  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
+-- Which skills are attached to which meeting.
+CREATE TABLE IF NOT EXISTS meeting_skills (
+    meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    skill_id    TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    PRIMARY KEY (meeting_id, skill_id)
+);
+
+-- One row per post-skill execution.
+-- `skill_name` and `target` are denormalized so a run still reads correctly
+-- after the skill it came from is renamed or deleted.
+-- status: 'running' | 'done' | 'error'
+CREATE TABLE IF NOT EXISTS skill_runs (
+    id          TEXT PRIMARY KEY,
+    meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    skill_id    TEXT NOT NULL,
+    skill_name  TEXT NOT NULL,
+    target      TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL,
+    message     TEXT NOT NULL DEFAULT '',
+    output      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_meeting ON skill_runs(meeting_id, created_at);
+
 -- Chat with a meeting's transcript + notes. role: 'user' | 'assistant'
 CREATE TABLE IF NOT EXISTS chat_messages (
     id          TEXT PRIMARY KEY,

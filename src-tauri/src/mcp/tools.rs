@@ -110,7 +110,21 @@ pub fn dispatch(db: &Db, name: &str, args: &Value) -> Result<Value> {
             let meeting = db
                 .get_meeting(id)?
                 .ok_or_else(|| AppError::NotFound(format!("meeting {id}")))?;
-            let notes = db.list_notes(id)?;
+            // Generated notes are stored as JSON, so flatten them to prose here —
+            // an MCP host wants readable notes, not this app's storage schema.
+            let notes = db
+                .list_notes(id)?
+                .iter()
+                .map(|n| {
+                    let content = if n.kind == "ai" {
+                        crate::notes::parse(&n.content).to_plain_text()
+                    } else {
+                        n.content.clone()
+                    };
+                    json!({ "kind": n.kind, "content": content })
+                })
+                .collect::<Vec<_>>();
+
             Ok(json!({
                 "id": meeting.id,
                 "title": meeting.title,
@@ -118,8 +132,7 @@ pub fn dispatch(db: &Db, name: &str, args: &Value) -> Result<Value> {
                 "status": meeting.status,
                 "startedAt": meeting.started_at,
                 "endedAt": meeting.ended_at,
-                "notes": notes.iter().map(|n| json!({ "kind": n.kind, "content": n.content }))
-                                .collect::<Vec<_>>(),
+                "notes": notes,
             }))
         }
 

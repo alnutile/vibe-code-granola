@@ -3,7 +3,9 @@
 //! Two request shapes cover the field:
 //!
 //! * **OpenAI-compatible** — `POST {base}/audio/transcriptions`. This is OpenAI
-//!   itself, plus speaches, faster-whisper-server, LM Studio, and most others.
+//!   itself, plus speaches, faster-whisper-server, and most others. Note that
+//!   "serves an OpenAI-compatible API" does not imply this route exists: LM
+//!   Studio and Ollama expose chat and embeddings only.
 //! * **whisper.cpp** — `POST {base}/inference`. The odd one out: whisper.cpp's
 //!   bundled server predates the OpenAI convention and never adopted it.
 //!
@@ -110,11 +112,13 @@ impl SttClient {
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(AppError::Provider {
-                provider: format!("{} (transcription)", self.provider),
+            return Err(AppError::Config(explain_failure(
+                &self.provider,
+                &self.base_url,
+                path,
                 status,
-                body,
-            });
+                &body,
+            )));
         }
 
         // Most servers honour `response_format=json`, but a few return bare text.
@@ -136,6 +140,49 @@ impl SttClient {
         self.transcribe_wav(silence, "test.wav").await?;
         Ok(format!("{} · {} reachable", self.provider, self.model))
     }
+}
+
+/// Turn a failed transcription request into something the user can act on.
+///
+/// The raw status is nearly useless here. The common failure is pointing this at
+/// a server that does not transcribe at all — LM Studio and Ollama serve chat and
+/// embeddings only, and answer a multipart upload with "unsupported media type"
+/// or a 404, which reads like a bug in this app rather than a misconfiguration.
+fn explain_failure(provider: &str, base_url: &str, path: &str, status: u16, body: &str) -> String {
+    let url = format!("{base_url}{path}");
+    let looks_like_wrong_server = status == 415
+        || status == 404
+        || status == 405
+        || body.contains("unsupported_media_type")
+        || body.contains("Unexpected endpoint");
+
+    if looks_like_wrong_server {
+        return format!(
+            "{url} did not accept an audio upload (HTTP {status}).\n\n\
+             That endpoint probably isn't a transcription server. LM Studio and Ollama \
+             serve chat only — they have no /audio/transcriptions route, so no speech \
+             model loaded in them can be used here.\n\n\
+             For local transcription use whisper.cpp's server (choose the \"whisper.cpp\" \
+             provider), or an OpenAI-compatible one such as speaches. Check too that the \
+             endpoint is the API root — e.g. http://127.0.0.1:8000/v1, not a path ending \
+             in /chat.\n\n\
+             The server said: {}",
+            truncate_body(body)
+        );
+    }
+
+    format!(
+        "{provider} transcription failed at {url} (HTTP {status}): {}",
+        truncate_body(body)
+    )
+}
+
+fn truncate_body(body: &str) -> String {
+    let b = body.trim();
+    if b.chars().count() <= 300 {
+        return b.to_string();
+    }
+    format!("{}…", b.chars().take(300).collect::<String>())
 }
 
 /// Whisper-family models emit a small set of stock hallucinations on silence —
@@ -181,6 +228,28 @@ pub fn default_base_url(provider: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn a_chat_only_server_is_named_as_the_likely_cause() {
+        let msg = explain_failure(
+            "openai_compatible",
+            "http://localhost:1234/v1",
+            "/audio/transcriptions",
+            415,
+            r#"{"error":{"code":"unsupported_media_type"}}"#,
+        );
+        assert!(msg.contains("isn't a transcription server"), "{msg}");
+        assert!(msg.contains("LM Studio"), "the actual culprit should be named");
+        assert!(msg.contains("whisper.cpp"), "and a working alternative offered");
+    }
+
+    #[test]
+    fn a_genuine_provider_error_is_reported_plainly() {
+        let msg = explain_failure("openai", "https://api.openai.com/v1", "/audio/transcriptions", 500, "boom");
+        assert!(msg.contains("HTTP 500"));
+        assert!(!msg.contains("isn't a transcription server"));
+    }
 
     #[test]
     fn stock_silence_hallucinations_are_dropped() {

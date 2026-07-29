@@ -16,6 +16,7 @@ pub const EVENT_NOTES: &str = "meeting://notes";
 pub const EVENT_UPDATED: &str = "meeting://updated";
 pub const EVENT_CHAT_DELTA: &str = "chat://delta";
 pub const EVENT_CHAT_DONE: &str = "chat://done";
+pub const EVENT_RUNS: &str = "meeting://runs";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +39,7 @@ pub struct LevelsEvent {
 #[serde(rename_all = "camelCase")]
 pub struct NotesEvent {
     pub meeting_id: String,
-    pub content: String,
+    pub notes: crate::notes::RenderedNotes,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,13 +96,13 @@ pub fn emit_suggestion(app: &AppHandle, suggestion: &Suggestion) {
     emit(app, EVENT_SUGGESTION, suggestion.clone());
 }
 
-pub fn emit_notes(app: &AppHandle, meeting_id: &str, content: &str) {
+pub fn emit_notes(app: &AppHandle, meeting_id: &str, notes: &crate::notes::RenderedNotes) {
     emit(
         app,
         EVENT_NOTES,
         NotesEvent {
             meeting_id: meeting_id.to_string(),
-            content: content.to_string(),
+            notes: notes.clone(),
         },
     );
 }
@@ -117,6 +118,26 @@ pub fn emit_chat_delta(app: &AppHandle, meeting_id: &str, delta: &str) {
         ChatDeltaEvent {
             meeting_id: meeting_id.to_string(),
             delta: delta.to_string(),
+        },
+    );
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunsEvent {
+    pub meeting_id: String,
+    pub runs: Vec<crate::db::SkillRun>,
+}
+
+/// The whole list each time, not a delta — there are a handful of runs per
+/// meeting, and replacing wholesale means the UI can't drift out of order.
+pub fn emit_skill_runs(app: &AppHandle, meeting_id: &str, runs: &[crate::db::SkillRun]) {
+    emit(
+        app,
+        EVENT_RUNS,
+        RunsEvent {
+            meeting_id: meeting_id.to_string(),
+            runs: runs.to_vec(),
         },
     );
 }
