@@ -17,6 +17,7 @@ import type {
   ModelInfo,
   ModelStatus,
   Note,
+  NoteImage,
   PermissionStatus,
   RecordingState,
   RenderedNotes,
@@ -114,6 +115,17 @@ export const generateNotes = (meetingId: string) =>
   invoke<RenderedNotes>("notes_generate", { meetingId });
 export const toggleAction = (meetingId: string, index: number) =>
   invoke<RenderedNotes>("note_toggle_action", { meetingId, index });
+
+export const listNoteImages = (meetingId: string) =>
+  invoke<NoteImage[]>("note_images_list", { meetingId });
+/** `data` is base64 (no `data:` prefix needed, but tolerated). Returns the row. */
+export const addNoteImage = (meetingId: string, name: string, mime: string, data: string) =>
+  invoke<NoteImage>("note_image_add", { meetingId, name, mime, data });
+/** The image as a `data:` URL, for rendering. */
+export const noteImageData = (id: string) => invoke<string>("note_image_data", { id });
+export const renameNoteImage = (id: string, name: string) =>
+  invoke<void>("note_image_rename", { id, name });
+export const deleteNoteImage = (id: string) => invoke<void>("note_image_delete", { id });
 
 export const listSuggestions = (meetingId: string) =>
   invoke<Suggestion[]>("suggestions_list", { meetingId });

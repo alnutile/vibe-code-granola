@@ -1404,3 +1404,69 @@ code.path {
 .muted { color: var(--color-neutral-600); }
 .block { display: block; }
 .grow { flex: 1; }
+
+/* ---- Note image attachments (My notes tab) ---- */
+
+.images-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: var(--space-3);
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.image-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.image-thumb {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--color-neutral-200);
+}
+
+.image-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-neutral-500);
+}
+
+.image-card figcaption {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.image-name {
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.image-actions {
+  gap: 4px;
+  align-items: center;
+}
+
+.image-actions .btn {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.image-remove {
+  margin-left: auto;
+  font-size: 16px;
+  line-height: 1;
+}

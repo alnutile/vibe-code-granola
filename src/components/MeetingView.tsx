@@ -5,6 +5,7 @@ import type {
   Folder,
   Meeting,
   MeetingNotes,
+  NoteImage,
   RenderedNotes,
   Segment,
   Skill,
@@ -427,7 +428,8 @@ export default function MeetingView(props: Props) {
   );
 }
 
-/** The "My notes" tab: a plain textarea that autosaves. */
+/** The "My notes" tab: a textarea that autosaves, plus image attachments you can
+ *  reference from the text. Images are stored on disk and surfaced over MCP. */
 function RawNotes({
   meetingId,
   value,
@@ -440,7 +442,41 @@ function RawNotes({
   onError: (msg: string) => void;
 }) {
   const timer = useRef<number | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const [saving, setSaving] = useState(false);
+  const [images, setImages] = useState<NoteImage[]>([]);
+  // Data URLs for rendering, loaded on demand and cached by image id.
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const imgs = await api.listNoteImages(meetingId);
+        if (!alive) return;
+        setImages(imgs);
+        for (const img of imgs) void loadThumb(img.id);
+      } catch (e) {
+        if (alive) onError(api.errorMessage(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId]);
+
+  const loadThumb = async (id: string) => {
+    try {
+      const url = await api.noteImageData(id);
+      setThumbs((p) => ({ ...p, [id]: url }));
+    } catch {
+      // A missing file just leaves a placeholder; not worth an error banner.
+    }
+  };
 
   const edit = (v: string) => {
     onChange(v);
@@ -461,18 +497,190 @@ function RawNotes({
     [],
   );
 
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result)); // a data: URL
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+  const addFiles = async (files: File[]) => {
+    const pics = files.filter((f) => f.type.startsWith("image/"));
+    if (pics.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of pics) {
+        const data = await fileToBase64(file);
+        const name = file.name?.trim() || "Pasted image";
+        const img = await api.addNoteImage(meetingId, name, file.type, data);
+        setImages((p) => [...p, img]);
+        void loadThumb(img.id);
+      }
+    } catch (e) {
+      onError(api.errorMessage(e));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  /** Drop the image's markdown reference in at the cursor (or the end). */
+  const insertReference = (img: NoteImage) => {
+    const md = `![${img.name}](${img.reference})`;
+    const el = textareaRef.current;
+    const at = el ? el.selectionStart : value.length;
+    const needsNlBefore = at > 0 && value[at - 1] !== "\n";
+    const snippet = `${needsNlBefore ? "\n" : ""}${md}\n`;
+    const next = value.slice(0, at) + snippet + value.slice(at);
+    edit(next);
+    // Restore focus and place the caret after what we inserted.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const pos = at + snippet.length;
+      el.setSelectionRange(pos, pos);
+    });
+  };
+
+  const rename = async (img: NoteImage, name: string) => {
+    const trimmed = name.trim();
+    setImages((p) => p.map((i) => (i.id === img.id ? { ...i, name: trimmed || i.name } : i)));
+    if (!trimmed || trimmed === img.name) return;
+    try {
+      await api.renameNoteImage(img.id, trimmed);
+    } catch (e) {
+      onError(api.errorMessage(e));
+    }
+  };
+
+  const remove = async (img: NoteImage) => {
+    setImages((p) => p.filter((i) => i.id !== img.id));
+    setThumbs((p) => {
+      const next = { ...p };
+      delete next[img.id];
+      return next;
+    });
+    try {
+      await api.deleteNoteImage(img.id);
+    } catch (e) {
+      onError(api.errorMessage(e));
+      setImages(await api.listNoteImages(meetingId));
+    }
+  };
+
   return (
     <div className="doc-section">
       <div className="doc-hint">
-        {saving ? "Saving…" : "Yours, untouched. The model reads these but never overwrites them."}
+        {saving
+          ? "Saving…"
+          : uploading
+            ? "Adding image…"
+            : "Yours, untouched. The model reads these but never overwrites them."}
       </div>
+
       <textarea
+        ref={textareaRef}
         className="input"
-        style={{ minHeight: 340, lineHeight: 1.7, fontSize: 15 }}
+        style={{ minHeight: 300, lineHeight: 1.7, fontSize: 15 }}
         value={value}
-        placeholder="Type as you go. Whatever you write here is treated as higher-signal than the transcript when the write-up is generated."
+        placeholder="Type as you go. Whatever you write here is treated as higher-signal than the transcript when the write-up is generated. Paste or drop an image to attach it."
         onChange={(e) => edit(e.target.value)}
+        onPaste={(e) => {
+          const files = Array.from(e.clipboardData.files);
+          if (files.some((f) => f.type.startsWith("image/"))) {
+            e.preventDefault();
+            void addFiles(files);
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          void addFiles(Array.from(e.dataTransfer.files));
+        }}
       />
+
+      <div className="images-bar">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <span className="skills-label">
+            Images {images.length > 0 && `(${images.length})`}
+          </span>
+          <button className="btn btn-ghost" onClick={() => fileInput.current?.click()}>
+            + Add image
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              void addFiles(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+          />
+        </div>
+
+        {images.length === 0 ? (
+          <p className="doc-hint" style={{ marginTop: 4 }}>
+            {dragging
+              ? "Drop to attach."
+              : "Paste, drop, or add an image. Insert its reference to point at it from your notes — Claude can fetch it over MCP."}
+          </p>
+        ) : (
+          <div className="image-grid">
+            {images.map((img) => (
+              <figure className="image-card elev-sm" key={img.id}>
+                {thumbs[img.id] ? (
+                  <img className="image-thumb" src={thumbs[img.id]} alt={img.name} />
+                ) : (
+                  <div className="image-thumb image-thumb-empty">…</div>
+                )}
+                <figcaption>
+                  <input
+                    className="input image-name"
+                    value={img.name}
+                    aria-label="Image name"
+                    onChange={(e) =>
+                      setImages((p) =>
+                        p.map((i) => (i.id === img.id ? { ...i, name: e.target.value } : i)),
+                      )
+                    }
+                    onBlur={(e) => void rename(img, e.target.value)}
+                  />
+                  <div className="row image-actions">
+                    <button
+                      className="btn btn-ghost"
+                      title="Insert a reference to this image into your notes"
+                      onClick={() => insertReference(img)}
+                    >
+                      Insert
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      title="Copy the amble://image reference"
+                      onClick={() => void navigator.clipboard?.writeText(img.reference)}
+                    >
+                      Copy ref
+                    </button>
+                    <button
+                      className="btn btn-ghost image-remove"
+                      aria-label={`Remove ${img.name}`}
+                      onClick={() => void remove(img)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

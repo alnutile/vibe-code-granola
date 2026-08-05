@@ -795,6 +795,99 @@ impl Db {
             .find(|n| n.kind == kind))
     }
 
+    // ---------------------------------------------------------------- note images
+
+    fn map_note_image(r: &rusqlite::Row<'_>) -> rusqlite::Result<NoteImage> {
+        let id: String = r.get(0)?;
+        let reference = NoteImage::reference_for(&id);
+        Ok(NoteImage {
+            id,
+            meeting_id: r.get(1)?,
+            name: r.get(2)?,
+            mime: r.get(3)?,
+            path: r.get(4)?,
+            size_bytes: r.get(5)?,
+            reference,
+            created_at: r.get(6)?,
+        })
+    }
+
+    const NOTE_IMAGE_COLS: &'static str =
+        "id, meeting_id, name, mime, path, size_bytes, created_at";
+
+    /// Record an image whose bytes have already been written to `path`.
+    pub fn add_note_image(
+        &self,
+        meeting_id: &str,
+        name: &str,
+        mime: &str,
+        path: &str,
+        size_bytes: i64,
+    ) -> Result<NoteImage> {
+        let id = new_id();
+        let img = NoteImage {
+            reference: NoteImage::reference_for(&id),
+            id,
+            meeting_id: meeting_id.to_string(),
+            name: name.to_string(),
+            mime: mime.to_string(),
+            path: path.to_string(),
+            size_bytes,
+            created_at: now(),
+        };
+        self.conn.lock().execute(
+            "INSERT INTO note_images (id, meeting_id, name, mime, path, size_bytes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                img.id, img.meeting_id, img.name, img.mime, img.path, img.size_bytes, img.created_at
+            ],
+        )?;
+        Ok(img)
+    }
+
+    pub fn list_note_images(&self, meeting_id: &str) -> Result<Vec<NoteImage>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM note_images WHERE meeting_id = ?1 ORDER BY created_at",
+            Self::NOTE_IMAGE_COLS
+        ))?;
+        let rows = stmt
+            .query_map(params![meeting_id], Self::map_note_image)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_note_image(&self, id: &str) -> Result<Option<NoteImage>> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .query_row(
+                &format!("SELECT {} FROM note_images WHERE id = ?1", Self::NOTE_IMAGE_COLS),
+                params![id],
+                Self::map_note_image,
+            )
+            .optional()?)
+    }
+
+    pub fn rename_note_image(&self, id: &str, name: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE note_images SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the row and hand back what it was, so the caller can remove the
+    /// file on disk too. `None` if the id was already gone.
+    pub fn delete_note_image(&self, id: &str) -> Result<Option<NoteImage>> {
+        let existing = self.get_note_image(id)?;
+        if existing.is_some() {
+            self.conn
+                .lock()
+                .execute("DELETE FROM note_images WHERE id = ?1", params![id])?;
+        }
+        Ok(existing)
+    }
+
     // --------------------------------------------------------------- suggestions
 
     pub fn add_suggestion(&self, meeting_id: &str, content: &str, at_ms: i64) -> Result<Suggestion> {
@@ -1074,6 +1167,40 @@ mod tests {
         // Re-seeding is a no-op — a deleted builtin stays deleted.
         db.seed_builtin_skills().unwrap();
         assert_eq!(db.list_skills().unwrap().len(), first);
+    }
+
+    #[test]
+    fn note_images_round_trip_and_carry_a_stable_reference() {
+        let db = Db::open_in_memory().unwrap();
+        let m = db.create_meeting("Design sync", "", None, None).unwrap();
+
+        let img = db
+            .add_note_image(&m.id, "dashboard.png", "image/png", "/tmp/x/dashboard.png", 1234)
+            .unwrap();
+        assert_eq!(img.reference, format!("amble://image/{}", img.id));
+        assert_eq!(img.markdown(), format!("![dashboard.png](amble://image/{})", img.id));
+
+        let listed = db.list_note_images(&m.id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, "/tmp/x/dashboard.png", "path is kept for reads");
+
+        db.rename_note_image(&img.id, "Q4 dashboard").unwrap();
+        assert_eq!(db.get_note_image(&img.id).unwrap().unwrap().name, "Q4 dashboard");
+
+        let removed = db.delete_note_image(&img.id).unwrap().unwrap();
+        assert_eq!(removed.path, "/tmp/x/dashboard.png", "delete returns the row to unlink");
+        assert!(db.list_note_images(&m.id).unwrap().is_empty());
+        assert!(db.delete_note_image(&img.id).unwrap().is_none(), "second delete is a no-op");
+    }
+
+    #[test]
+    fn deleting_a_meeting_cascades_to_its_note_images() {
+        let db = Db::open_in_memory().unwrap();
+        let m = db.create_meeting("Temp", "", None, None).unwrap();
+        db.add_note_image(&m.id, "a.png", "image/png", "/tmp/a.png", 1)
+            .unwrap();
+        db.delete_meeting(&m.id).unwrap();
+        assert!(db.list_note_images(&m.id).unwrap().is_empty());
     }
 
     #[test]

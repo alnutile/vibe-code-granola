@@ -94,6 +94,28 @@ CREATE TABLE IF NOT EXISTS notes (
 
 CREATE INDEX IF NOT EXISTS idx_notes_meeting ON notes(meeting_id);
 
+-- Images attached to a meeting's notes. The bytes live on disk under
+-- `attachments/<meeting_id>/` (next to the audio recordings) and only the
+-- metadata is kept here — the same split the app uses for audio, so the
+-- database stays small and a large screenshot never bloats a query.
+--
+-- Each image is referenced from the note text as `amble://image/<id>`, a stable
+-- local URL that survives a rename and that the MCP `get_image` tool resolves
+-- back to the bytes.
+CREATE TABLE IF NOT EXISTS note_images (
+    id          TEXT PRIMARY KEY,
+    meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    -- User-facing label. Defaults to the dropped file's name; editable after.
+    name        TEXT NOT NULL,
+    mime        TEXT NOT NULL,
+    -- Absolute path to the bytes on disk.
+    path        TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_images_meeting ON note_images(meeting_id, created_at);
+
 -- Live in-meeting nudges generated against the meeting prompt.
 CREATE TABLE IF NOT EXISTS suggestions (
     id          TEXT PRIMARY KEY,

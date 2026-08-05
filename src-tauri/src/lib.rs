@@ -18,6 +18,7 @@ pub mod prompts;
 pub mod settings;
 pub mod state;
 pub mod stt;
+pub mod util;
 
 use state::AppState;
 use std::sync::Arc;
@@ -101,6 +102,11 @@ pub fn run() {
             commands::note_save,
             commands::notes_generate,
             commands::note_toggle_action,
+            commands::note_images_list,
+            commands::note_image_add,
+            commands::note_image_data,
+            commands::note_image_rename,
+            commands::note_image_delete,
             commands::suggestions_list,
             commands::suggest_now,
             // chat

@@ -271,6 +271,9 @@ pub struct Paths {
     pub config: PathBuf,
     pub db: PathBuf,
     pub recordings: PathBuf,
+    /// Note image attachments, one subdirectory per meeting. Kept regardless of
+    /// the `keep_audio` setting — these are user content, not raw capture.
+    pub attachments: PathBuf,
 }
 
 impl Paths {
@@ -297,10 +300,13 @@ impl Paths {
         std::fs::create_dir_all(&root)?;
         let recordings = root.join("recordings");
         std::fs::create_dir_all(&recordings)?;
+        let attachments = root.join("attachments");
+        std::fs::create_dir_all(&attachments)?;
         Ok(Self {
             config: root.join("config.json"),
             db: root.join("granola.db"),
             recordings,
+            attachments,
             root,
         })
     }

@@ -78,6 +78,44 @@ pub struct Note {
     pub updated_at: String,
 }
 
+/// An image attached to a meeting's notes.
+///
+/// The bytes live on disk (`path`); only this metadata is stored in the
+/// database. `path` never crosses to the frontend or an MCP host — both address
+/// an image by its `reference` (`amble://image/<id>`), a stable local URL that
+/// survives renames and that `get_image` resolves back to the bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteImage {
+    pub id: String,
+    pub meeting_id: String,
+    /// User-facing label. Defaults to the original filename, editable after.
+    pub name: String,
+    pub mime: String,
+    /// Absolute path to the bytes. Kept off the wire.
+    #[serde(skip)]
+    pub path: String,
+    pub size_bytes: i64,
+    /// `amble://image/<id>`. Derived, but sent so the UI and note text never
+    /// hard-code the URL scheme.
+    pub reference: String,
+    pub created_at: String,
+}
+
+impl NoteImage {
+    /// The stable local URL for an image id.
+    pub fn reference_for(id: &str) -> String {
+        format!("amble://image/{id}")
+    }
+
+    /// Markdown a note can embed to point at this image. Brackets in the name
+    /// are neutralised so they can't break the `![alt](url)` syntax.
+    pub fn markdown(&self) -> String {
+        let alt = self.name.replace(['[', ']'], " ");
+        format!("![{alt}]({})", self.reference)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
