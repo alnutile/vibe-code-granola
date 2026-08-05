@@ -69,6 +69,19 @@ export interface MeetingNotes {
   user: string;
 }
 
+/** An image attached to a meeting's notes. The bytes live on disk; the UI loads
+ *  them on demand via `noteImageData`. `reference` is the `amble://image/<id>`
+ *  token that gets embedded in the note text and that MCP resolves. */
+export interface NoteImage {
+  id: string;
+  meetingId: string;
+  name: string;
+  mime: string;
+  sizeBytes: number;
+  reference: string;
+  createdAt: string;
+}
+
 export interface ModelStatus {
   label: string;
   local: boolean;

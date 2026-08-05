@@ -246,8 +246,13 @@ fn tools_call(state: &Arc<AppState>, params: &Value) -> Result<Value> {
     // error: the model should see what went wrong and adapt, rather than the
     // host treating it as a transport fault.
     Ok(match tools::dispatch(&state.db, name, &args) {
-        Ok(value) => json!({
+        Ok(tools::ToolOutput::Json(value)) => json!({
             "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value)? }],
+            "isError": false
+        }),
+        // Image (and any future non-text) tools return ready-made content blocks.
+        Ok(tools::ToolOutput::Content(items)) => json!({
+            "content": items,
             "isError": false
         }),
         Err(e) => json!({

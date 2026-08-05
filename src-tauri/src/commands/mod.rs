@@ -372,6 +372,109 @@ pub fn note_toggle_action(
     meeting::toggle_action(&app, &state, &meeting_id, index)
 }
 
+// --------------------------------------------------------------- note images
+
+/// A file extension for an image mime, so saved files stay recognisable on disk.
+/// Falls back to `img` rather than guessing, which keeps an unknown type openable
+/// by content sniffing without pretending to be something it isn't.
+fn image_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/heic" => "heic",
+        _ => "img",
+    }
+}
+
+#[tauri::command]
+pub fn note_images_list(state: St<'_>, meeting_id: String) -> Result<Vec<NoteImage>> {
+    state.db.list_note_images(&meeting_id)
+}
+
+/// Attach an image to a meeting's notes. The bytes arrive base64-encoded (the one
+/// form that survives both the IPC bridge and, later, an MCP host), get written to
+/// `attachments/<meeting_id>/`, and the row records where they landed.
+#[tauri::command]
+pub fn note_image_add(
+    state: St<'_>,
+    meeting_id: String,
+    name: String,
+    mime: String,
+    data: String,
+) -> Result<NoteImage> {
+    // The meeting has to exist — an orphaned file with no row to find it is just
+    // wasted disk.
+    state.require_meeting(&meeting_id)?;
+
+    if !mime.starts_with("image/") {
+        return Err(AppError::Other(format!("{mime} is not an image")));
+    }
+
+    let bytes = crate::util::base64_decode(&data)?;
+    if bytes.is_empty() {
+        return Err(AppError::Other("The image is empty.".into()));
+    }
+
+    let dir = state.paths.attachments.join(&meeting_id);
+    std::fs::create_dir_all(&dir)?;
+    let file_name = format!("{}.{}", uuid::Uuid::new_v4(), image_ext(&mime));
+    let path = dir.join(&file_name);
+    std::fs::write(&path, &bytes)?;
+
+    let label = {
+        let trimmed = name.trim();
+        if trimmed.is_empty() { "image" } else { trimmed }
+    };
+
+    state.db.add_note_image(
+        &meeting_id,
+        label,
+        &mime,
+        &path.to_string_lossy(),
+        bytes.len() as i64,
+    )
+}
+
+/// The image as a `data:` URL, for rendering in the notes gallery. Read on demand
+/// rather than shipped with the list so a meeting full of screenshots doesn't cost
+/// a wall of base64 on every load.
+#[tauri::command]
+pub fn note_image_data(state: St<'_>, id: String) -> Result<String> {
+    let img = state
+        .db
+        .get_note_image(&id)?
+        .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
+    let bytes = std::fs::read(&img.path)?;
+    Ok(format!("data:{};base64,{}", img.mime, crate::util::base64_encode(&bytes)))
+}
+
+#[tauri::command]
+pub fn note_image_rename(state: St<'_>, id: String, name: String) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::Other("Give the image a name.".into()));
+    }
+    state.db.rename_note_image(&id, name)
+}
+
+#[tauri::command]
+pub fn note_image_delete(state: St<'_>, id: String) -> Result<()> {
+    // Drop the row first; if that succeeds, remove the file. A leftover file with
+    // no row is invisible clutter, but a dangling row with no file would surface
+    // as a broken image — so the row is the source of truth to clear.
+    if let Some(img) = state.db.delete_note_image(&id)? {
+        if let Err(e) = std::fs::remove_file(&img.path) {
+            tracing::debug!(path = %img.path, error = %e, "note image file already gone");
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- suggestions
 
 #[tauri::command]
@@ -692,11 +795,15 @@ pub fn mcp_toggle_connection(state: St<'_>, id: String, enabled: bool) -> Result
 /// Settings screen before that exists.
 #[tauri::command]
 pub fn mcp_tool_call(state: St<'_>, name: String, args: Option<Value>) -> Result<Value> {
-    mcp::tools::dispatch(
+    let out = mcp::tools::dispatch(
         &state.db,
         &name,
         &args.unwrap_or_else(|| serde_json::json!({})),
-    )
+    )?;
+    Ok(match out {
+        mcp::tools::ToolOutput::Json(value) => value,
+        mcp::tools::ToolOutput::Content(items) => serde_json::json!({ "content": items }),
+    })
 }
 
 #[cfg(test)]
